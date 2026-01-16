@@ -1,0 +1,47 @@
+{
+  "name": "unos-browser-extension",
+  "version": "0.1.0",
+  "description": "A Chrome extension for continuous tab tracking with relationship analysis, metadata tagging, and export capabilities",
+  "type": "module",
+  "author": "Pedro",
+  "license": "MIT",
+  "keywords": [
+    "chrome-extension",
+    "tab-tracker",
+    "browser-extension",
+    "productivity",
+    "tab-management",
+    "wxt",
+    "vue"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pedrodinisf/unos-browser-extension"
+  },
+  "bugs": {
+    "url": "https://github.com/pedrodinisf/unos-browser-extension/issues"
+  },
+  "scripts": {
+    "dev": "wxt",
+    "dev:firefox": "wxt -b firefox",
+    "build": "wxt build",
+    "build:firefox": "wxt build -b firefox",
+    "zip": "wxt zip",
+    "zip:firefox": "wxt zip -b firefox",
+    "postinstall": "wxt prepare",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "@wxt-dev/module-vue": "^1.0.3",
+    "typescript": "^5.7.0",
+    "vue": "^3.5.0",
+    "wxt": "^0.20.0"
+  },
+  "dependencies": {
+    "dexie": "^4.0.11"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
