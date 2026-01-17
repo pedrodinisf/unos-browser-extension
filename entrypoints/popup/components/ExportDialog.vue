@@ -153,6 +153,8 @@ async function handleExport() {
   border-radius: 12px;
   width: 320px;
   max-height: 80vh;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid #3a3a5a;
 }
@@ -188,6 +190,9 @@ async function handleExport() {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .field {
