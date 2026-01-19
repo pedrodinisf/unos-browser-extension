@@ -387,21 +387,123 @@ storageManager.workingState.currentSessionId = newId;
 
 ## Testing
 
+### Commands
+
 ```bash
-# Run all tests
+# Run all tests once
 npm test
 
-# Run tests in watch mode
+# Run tests in watch mode (re-runs on file changes)
 npm run test:watch
 
-# Run tests with coverage
+# Run tests with coverage report
 npm run test:coverage
 ```
 
-**Test files location**: `src/__tests__/`
+### Test Framework
 
-**Test categories**:
-- `ExportService.test.ts` - CSV generation, escaping, ZIP creation
-- `utils.test.ts` - Utility functions (formatTime, getDomain, etc.)
+- **Vitest** - Fast unit test framework compatible with Vite
+- **happy-dom** - Lightweight DOM implementation for testing
+- **Configuration**: `vitest.config.ts`
 
-**Mocking Chrome APIs**: Tests mock `chrome.runtime.sendMessage` for isolated unit testing.
+### Test Structure
+
+```
+src/__tests__/
+├── setup.ts              # Global mocks (Chrome APIs)
+├── ExportService.test.ts # Service tests
+└── utils.test.ts         # Utility function tests
+```
+
+### Chrome API Mocking
+
+Tests run outside the browser, so Chrome APIs must be mocked. The setup file (`src/__tests__/setup.ts`) provides:
+
+```typescript
+// Available mocks (imported from setup.ts)
+import { mockSendMessage, mockTabs, mockWindows } from './setup';
+
+// Example: Mock a message response
+mockSendMessage.mockImplementation((message, callback) => {
+  if (message.type === 'GET_ALL_DATA') {
+    callback({ success: true, data: { tabs: [], windows: [] } });
+  }
+});
+
+// Example: Verify a Chrome API was called
+expect(mockTabs.update).toHaveBeenCalledWith(1, { active: true });
+```
+
+### Writing Tests
+
+**Service tests** - Test business logic in isolation:
+```typescript
+describe('ExportService', () => {
+  it('should escape CSV values with commas', () => {
+    const service = new ExportService();
+    // Access private method for testing
+    const escape = (service as any).escapeCSV.bind(service);
+    expect(escape('hello, world')).toBe('"hello, world"');
+  });
+});
+```
+
+**Utility tests** - Test pure functions:
+```typescript
+describe('hashUrlSync', () => {
+  it('should return consistent hash for same URL', () => {
+    const hash1 = hashUrlSync('https://example.com');
+    const hash2 = hashUrlSync('https://example.com');
+    expect(hash1).toBe(hash2);
+  });
+});
+```
+
+**Async tests with timers** - Use fake timers for debounce/throttle:
+```typescript
+beforeEach(() => vi.useFakeTimers());
+afterEach(() => vi.useRealTimers());
+
+it('should debounce calls', () => {
+  const fn = vi.fn();
+  const debounced = debounce(fn, 100);
+
+  debounced();
+  debounced();
+  expect(fn).not.toHaveBeenCalled();
+
+  vi.advanceTimersByTime(100);
+  expect(fn).toHaveBeenCalledTimes(1);
+});
+```
+
+### Test Coverage
+
+Run `npm run test:coverage` to generate a coverage report. Output:
+- Terminal summary
+- `coverage/` directory with HTML report
+
+Target coverage areas:
+- `src/services/` - Core business logic
+- `src/utils/` - Utility functions
+- Excluded: `src/db/types.ts` (type definitions only)
+
+### Mock Data Factories
+
+Create consistent test data using factory functions:
+
+```typescript
+function createMockTab(overrides: Partial<TrackedTab> = {}): TrackedTab {
+  return {
+    persistentId: 'tab-1',
+    chromeTabId: 1,
+    url: 'https://example.com',
+    title: 'Example',
+    // ... other required fields
+    ...overrides,
+  };
+}
+
+// Usage
+const tab = createMockTab({ title: 'Custom Title' });
+```

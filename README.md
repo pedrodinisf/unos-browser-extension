@@ -242,6 +242,68 @@ Single CSV file with tab data:
 - index, pinned, groupId
 - tags, notes, isIncognito, isSaved, closedAt
 
+## Testing
+
+UNOS uses [Vitest](https://vitest.dev/) for unit testing with [happy-dom](https://github.com/nickytonline/happy-dom) for DOM simulation.
+
+### Running Tests
+
+```bash
+# Run all tests once
+npm test
+
+# Run tests in watch mode (re-runs on file changes)
+npm run test:watch
+
+# Run tests with coverage report
+npm run test:coverage
+```
+
+### Test Structure
+
+```
+src/__tests__/
+├── setup.ts              # Chrome API mocks
+├── ExportService.test.ts # Export functionality tests
+└── utils.test.ts         # Utility function tests (UUID, hash, debounce)
+```
+
+### What's Tested
+
+| Category | Tests | Description |
+|----------|-------|-------------|
+| ExportService | 23 | CSV generation, escaping, ZIP creation, JSON export |
+| UUID Utils | 4 | UUID v4 format validation, uniqueness |
+| Hash Utils | 9 | URL normalization, consistent hashing |
+| Debounce/Throttle | 14 | Timing, cancellation, leading/trailing edge |
+| View Helpers | 8 | formatTime, getDomain functions |
+
+### Chrome API Mocking
+
+Since tests run in Node.js, Chrome extension APIs are mocked in `src/__tests__/setup.ts`:
+
+- `chrome.runtime.sendMessage` - Message passing
+- `chrome.tabs.*` - Tab operations
+- `chrome.windows.*` - Window operations
+- `chrome.storage.session` - Session storage
+
+### Adding New Tests
+
+1. Create test file in `src/__tests__/` with `.test.ts` extension
+2. Import mocks from `./setup` if needed
+3. Use factory functions for mock data (see `ExportService.test.ts`)
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import { mockSendMessage } from './setup';
+
+describe('MyFeature', () => {
+  it('should do something', () => {
+    // Test implementation
+  });
+});
+```
+
 ## Data Retention
 
 - **Unsaved sessions**: Automatically deleted after 7 days
