@@ -4,6 +4,7 @@ A Chrome extension for continuous tab tracking with relationship analysis, metad
 
 ## Features
 
+### Core Tracking
 - **Continuous Tab Monitoring** - Track all tab activity with near-zero CPU overhead
 - **Visit History** - Record every tab activation with timestamps and duration
 - **Time Tracking** - Calculate total active time spent on each tab
@@ -11,8 +12,25 @@ A Chrome extension for continuous tab tracking with relationship analysis, metad
 - **Metadata Tagging** - Add custom tags and notes to any tab
 - **Session Management** - Organize browsing into sessions with automatic 7-day retention
 - **Persistence** - Data survives browser restarts via URL-based matching
-- **Export/Import** - Export data in JSON or CSV format with customizable filters
 - **Incognito Support** - Track incognito tabs with explicit flagging
+
+### Interactive Tab Management (NEW)
+- **Click to Navigate** - Click any tab in the popup to instantly switch to it
+- **Close Tabs** - Hover over tabs to reveal close button
+- **Drag & Drop** - Move tabs between windows by dragging
+- **Search & Filter** - Search across 1000+ tabs with debounced filtering
+- **Sort Options** - Sort by index, title, URL, active time, or creation date
+- **Compact View** - Toggle dense display for large tab counts
+- **Collapsible Windows** - Expand/collapse windows with one click
+
+### Export (NEW)
+- **ZIP Export** (Recommended) - All tables as separate CSV files
+  - sessions.csv, windows.csv, tabs.csv
+  - visits.csv, relationships.csv, tags.csv
+  - manifest.json with export metadata
+- **JSON Export** - Complete data in single file
+- **CSV Export** - Tabs only
+- UTF-8 BOM included for Excel compatibility
 
 ## Tech Stack
 
@@ -20,6 +38,8 @@ A Chrome extension for continuous tab tracking with relationship analysis, metad
 - **Language**: TypeScript
 - **UI**: Vue 3 with Composition API
 - **Storage**: IndexedDB via [Dexie.js](https://dexie.org/) + chrome.storage.session
+- **Export**: [JSZip](https://stuk.github.io/jszip/) for ZIP file creation
+- **Testing**: Vitest
 - **Target**: Chrome Extension Manifest V3
 
 ## Installation
@@ -59,6 +79,15 @@ npm run build
 
 # Create distributable zip
 npm run zip
+
+# Run tests
+npm test
+
+# Run tests in watch mode
+npm run test:watch
+
+# Run tests with coverage
+npm run test:coverage
 ```
 
 ## Project Structure
@@ -72,9 +101,14 @@ unos_browser_extension/
 │       ├── main.ts
 │       ├── App.vue             # Main popup component
 │       └── components/
+│           ├── AllWindowsView.vue  # Tab management UI
+│           ├── DebugPanel.vue      # Debug interface
 │           ├── MetadataPanel.vue   # Tag/notes editor
 │           └── ExportDialog.vue    # Export options
 ├── src/
+│   ├── __tests__/              # Test files
+│   │   ├── ExportService.test.ts
+│   │   └── utils.test.ts
 │   ├── db/
 │   │   ├── schema.ts           # Dexie database schema
 │   │   └── types.ts            # TypeScript interfaces
@@ -83,14 +117,15 @@ unos_browser_extension/
 │   │   ├── TabTracker.ts       # Tab event handling
 │   │   ├── WindowTracker.ts    # Window event handling
 │   │   ├── RelationshipManager.ts  # Relationship tracking
-│   │   └── ExportService.ts    # Export/import functionality
+│   │   ├── InitializationService.ts # Startup coordination
+│   │   └── ExportService.ts    # Export functionality (JSON/CSV/ZIP)
 │   ├── utils/
 │   │   ├── debounce.ts         # Debounce/throttle utilities
 │   │   ├── hash.ts             # URL hashing for persistence
 │   │   └── uuid.ts             # UUID generation
 │   └── constants/
-│       ├── timing.ts           # Timing constants
-│       └── retention.ts        # Data retention policies
+│       └── index.ts            # Timing, limits, retention policies
+├── vitest.config.ts            # Test configuration
 ├── wxt.config.ts
 ├── tsconfig.json
 └── package.json
@@ -180,22 +215,32 @@ UNOS uses a hybrid storage approach:
 
 ## Export Formats
 
+### ZIP Export (Recommended)
+Downloads a ZIP file containing separate CSV files for each table:
+- `sessions_YYYY-MM-DD.csv` - Session records
+- `windows_YYYY-MM-DD.csv` - Window records
+- `tabs_YYYY-MM-DD.csv` - Tab records with all metadata
+- `visits_YYYY-MM-DD.csv` - Visit history
+- `relationships_YYYY-MM-DD.csv` - Tab relationships
+- `tags_YYYY-MM-DD.csv` - Tag definitions
+- `manifest.json` - Export metadata and stats
+
+All CSV files include UTF-8 BOM for Excel compatibility.
+
 ### JSON Export
-Complete data export including:
-- Sessions
-- Windows
-- Tabs
+Complete data export in a single JSON file including:
+- Sessions, Windows, Tabs
 - Visit history (optional)
 - Relationships (optional)
 - Tags
 
 ### CSV Export
-Flat tab data with columns:
-- persistentId, url, title
+Single CSV file with tab data:
+- persistentId, chromeTabId, url, title
 - createdAt, lastActivatedAt, totalActiveTimeMinutes
-- windowPersistentId, sessionId
-- tags, notes
-- isIncognito, isSaved
+- windowPersistentId, chromeWindowId, sessionId
+- index, pinned, groupId
+- tags, notes, isIncognito, isSaved, closedAt
 
 ## Data Retention
 

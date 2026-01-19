@@ -12,22 +12,25 @@ const emit = defineEmits<{
 }>();
 
 // State
-const scope = ref<'current-window' | 'all-windows' | 'session'>('all-windows');
-const format = ref<'json' | 'csv'>('json');
+const format = ref<'json' | 'csv' | 'zip'>('zip');
 const includeVisitHistory = ref(true);
 const includeRelationships = ref(true);
 const includeIncognito = ref(false);
 const exporting = ref(false);
+const error = ref<string | null>(null);
 
 // Methods
 async function handleExport() {
   try {
     exporting.value = true;
+    error.value = null;
     const exportService = getExportService();
 
-    if (format.value === 'json') {
+    if (format.value === 'zip') {
+      await exportService.exportAndDownloadZIP();
+    } else if (format.value === 'json') {
       await exportService.exportAndDownloadJSON({
-        scope: scope.value,
+        scope: 'session',
         includeVisitHistory: includeVisitHistory.value,
         includeRelationships: includeRelationships.value,
         filters: {
@@ -36,7 +39,7 @@ async function handleExport() {
       });
     } else {
       await exportService.exportAndDownloadCSV({
-        scope: scope.value,
+        scope: 'session',
         filters: {
           includeIncognito: includeIncognito.value,
         },
@@ -46,7 +49,7 @@ async function handleExport() {
     emit('close');
   } catch (err) {
     console.error('Export failed:', err);
-    alert('Export failed: ' + (err instanceof Error ? err.message : 'Unknown error'));
+    error.value = err instanceof Error ? err.message : 'Unknown error';
   } finally {
     exporting.value = false;
   }
@@ -57,46 +60,54 @@ async function handleExport() {
   <div class="dialog-overlay" @click.self="$emit('close')">
     <div class="dialog">
       <div class="dialog-header">
-        <h2>Export Tabs</h2>
+        <h2>Export Data</h2>
         <button class="close-btn" @click="$emit('close')">&times;</button>
       </div>
 
       <div class="dialog-content">
-        <!-- Scope -->
-        <div class="field">
-          <label class="field-label">Scope</label>
-          <div class="radio-group">
-            <label class="radio-option">
-              <input type="radio" v-model="scope" value="current-window" />
-              <span>Current window only</span>
-            </label>
-            <label class="radio-option">
-              <input type="radio" v-model="scope" value="all-windows" />
-              <span>All windows</span>
-            </label>
-            <label class="radio-option">
-              <input type="radio" v-model="scope" value="session" />
-              <span>Entire session</span>
-            </label>
-          </div>
-        </div>
-
         <!-- Format -->
         <div class="field">
           <label class="field-label">Format</label>
           <div class="radio-group">
+            <label class="radio-option recommended">
+              <input type="radio" v-model="format" value="zip" />
+              <div class="radio-content">
+                <span class="radio-title">ZIP (Recommended)</span>
+                <span class="radio-desc">All tables as separate CSV files</span>
+              </div>
+            </label>
             <label class="radio-option">
               <input type="radio" v-model="format" value="json" />
-              <span>JSON (complete data)</span>
+              <div class="radio-content">
+                <span class="radio-title">JSON</span>
+                <span class="radio-desc">Complete data in single file</span>
+              </div>
             </label>
             <label class="radio-option">
               <input type="radio" v-model="format" value="csv" />
-              <span>CSV (tabs only)</span>
+              <div class="radio-content">
+                <span class="radio-title">CSV</span>
+                <span class="radio-desc">Tabs only</span>
+              </div>
             </label>
           </div>
         </div>
 
-        <!-- Options -->
+        <!-- ZIP info -->
+        <div v-if="format === 'zip'" class="info-box">
+          <div class="info-title">ZIP contains:</div>
+          <ul class="info-list">
+            <li>sessions.csv - Session records</li>
+            <li>windows.csv - Window records</li>
+            <li>tabs.csv - Tab records</li>
+            <li>visits.csv - Visit history</li>
+            <li>relationships.csv - Tab relationships</li>
+            <li>tags.csv - Tag definitions</li>
+            <li>manifest.json - Export metadata</li>
+          </ul>
+        </div>
+
+        <!-- JSON Options -->
         <div class="field" v-if="format === 'json'">
           <label class="field-label">Include</label>
           <div class="checkbox-group">
@@ -111,12 +122,17 @@ async function handleExport() {
           </div>
         </div>
 
-        <!-- Incognito -->
-        <div class="field">
+        <!-- Incognito (for JSON/CSV only) -->
+        <div class="field" v-if="format !== 'zip'">
           <label class="checkbox-option">
             <input type="checkbox" v-model="includeIncognito" />
             <span>Include incognito windows</span>
           </label>
+        </div>
+
+        <!-- Error -->
+        <div v-if="error" class="error-box">
+          {{ error }}
         </div>
       </div>
 
@@ -151,7 +167,7 @@ async function handleExport() {
 .dialog {
   background: #1e1e38;
   border-radius: 12px;
-  width: 320px;
+  width: 360px;
   max-height: 80vh;
   display: flex;
   flex-direction: column;
@@ -189,7 +205,7 @@ async function handleExport() {
   padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
   overflow-y: auto;
   flex: 1;
   min-height: 0;
@@ -214,7 +230,53 @@ async function handleExport() {
   gap: 8px;
 }
 
-.radio-option, .checkbox-option {
+.radio-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #2a2a4a;
+  transition: all 0.2s;
+}
+
+.radio-option:hover {
+  border-color: #3a3a5a;
+  background: rgba(99, 102, 241, 0.05);
+}
+
+.radio-option.recommended {
+  border-color: rgba(99, 102, 241, 0.3);
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.radio-option input {
+  accent-color: #6366f1;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  margin-top: 2px;
+}
+
+.radio-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.radio-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #ddd;
+}
+
+.radio-desc {
+  font-size: 11px;
+  color: #888;
+}
+
+.checkbox-option {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -222,11 +284,43 @@ async function handleExport() {
   font-size: 13px;
 }
 
-.radio-option input, .checkbox-option input {
+.checkbox-option input {
   accent-color: #6366f1;
   width: 16px;
   height: 16px;
   cursor: pointer;
+}
+
+.info-box {
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.info-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6366f1;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.info-list {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: #999;
+  line-height: 1.6;
+}
+
+.error-box {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  padding: 12px;
+  color: #ef4444;
+  font-size: 12px;
 }
 
 .dialog-footer {

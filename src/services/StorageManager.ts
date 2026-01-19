@@ -330,6 +330,8 @@ export class StorageManager {
     if (!tabRecord) {
       // Create new tab record
       persistentId = generateUUID();
+      const windowPersistentId = this.getPersistentWindowId(chromeTab.windowId);
+
       tabRecord = {
         persistentId,
         chromeTabId: chromeTab.id!,
@@ -347,9 +349,12 @@ export class StorageManager {
         lastActivatedAt: chromeTab.active ? now : 0,
         totalActiveTime: 0,
         sessionId,
+        windowPersistentId: windowPersistentId || '',
         isSaved: false,
+        isPinned: false,
+        visitCount: 0,
         tags: [],
-        notes: '',
+        notes: null,
         customMetadata: {},
         closedAt: null,
         updatedAt: now,
@@ -435,6 +440,13 @@ export class StorageManager {
   // ============================================
 
   /**
+   * Get database instance
+   */
+  getDB() {
+    return getDatabase();
+  }
+
+  /**
    * Get current session ID
    */
   getCurrentSessionId(): string | null {
@@ -504,8 +516,49 @@ export class StorageManager {
    * Persist working state to chrome.storage.session
    */
   private async persistWorkingState(): Promise<void> {
-    if (!this.workingState) return;
+    if (!this.workingState) {
+      console.warn('[StorageManager] Cannot persist - workingState is null');
+      return;
+    }
+    console.log('[StorageManager] Persisting working state, session:', this.workingState.currentSessionId);
     await chrome.storage.session.set({ workingState: this.workingState });
+    // Verify it was saved
+    const saved = await chrome.storage.session.get('workingState');
+    console.log('[StorageManager] Verified saved working state:', saved.workingState ? 'SUCCESS' : 'FAILED');
+  }
+
+  /**
+   * Initialize working state without reconciling (used by InitializationService)
+   */
+  async initializeWorkingState(sessionId: string): Promise<void> {
+    await this.ensureInitialized();
+
+    this.workingState = {
+      currentSessionId: sessionId,
+      activeTabPersistentId: null,
+      activeWindowPersistentId: null,
+      tabActivationTimestamp: 0,
+      windowFocusTimestamp: 0,
+      chromeTabIdMap: this.tabIdCache.toObject(),
+      chromeWindowIdMap: this.windowIdCache.toObject(),
+    };
+
+    await this.persistWorkingState();
+    console.log('[StorageManager] Working state initialized for session:', sessionId);
+  }
+
+  /**
+   * Set Chrome tab ID mapping (used by InitializationService)
+   */
+  setChromeTabId(chromeTabId: number, persistentId: string): void {
+    this.tabIdCache.set(chromeTabId, persistentId);
+  }
+
+  /**
+   * Set Chrome window ID mapping (used by InitializationService)
+   */
+  setChromeWindowId(chromeWindowId: number, persistentId: string): void {
+    this.windowIdCache.set(chromeWindowId, persistentId);
   }
 
   // ============================================

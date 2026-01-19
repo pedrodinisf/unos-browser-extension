@@ -38,12 +38,18 @@ export interface TrackedTab {
   totalActiveTime: number;
   /** Foreign key to Session */
   sessionId: string;
+  /** Persistent ID of the window this tab belongs to */
+  windowPersistentId: string;
   /** Whether user has explicitly saved this tab */
   isSaved: boolean;
+  /** Whether tab is pinned (denormalized from pinned field) */
+  isPinned: boolean;
+  /** Visit count (denormalized) */
+  visitCount: number;
   /** User-defined tags */
   tags: string[];
   /** User notes */
-  notes: string;
+  notes: string | null;
   /** Extensible metadata for future PKM integration */
   customMetadata: Record<string, unknown>;
   /** Unix timestamp (ms) when tab was closed (null if still open) */
@@ -298,7 +304,7 @@ export interface TabCSVRow {
   windowPersistentId: string;
   sessionId: string;
   tags: string;
-  notes: string;
+  notes: string | null;
   isIncognito: string;
   isSaved: string;
 }

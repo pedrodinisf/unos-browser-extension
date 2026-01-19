@@ -57,6 +57,53 @@ export class TabTracker {
       openerPersistentId = this.storageManager.getPersistentTabId(tab.openerTabId) || null;
     }
 
+    // Check for recently closed tab with same URL (within 5 minutes)
+    const fiveMinutesAgo = now - 5 * 60 * 1000;
+    const recentTab = await db.tabs
+      .where('urlHash')
+      .equals(urlHash)
+      .filter(t => t.closedAt !== null && t.closedAt > fiveMinutesAgo)
+      .last();
+
+    if (recentTab) {
+      // REUSE recently closed tab
+      console.log(`[TabTracker] Reusing recently closed tab: ${recentTab.persistentId} for URL: ${url.slice(0, 50)}`);
+
+      await db.tabs.update(recentTab.id!, {
+        chromeTabId: tab.id!,
+        chromeWindowId: tab.windowId,
+        windowPersistentId: windowPersistentId || recentTab.windowPersistentId,
+        closedAt: null,
+        lastActivatedAt: tab.active ? now : recentTab.lastActivatedAt,
+        title: tab.title || recentTab.title,
+        faviconUrl: tab.favIconUrl || recentTab.faviconUrl,
+        status: tab.status || 'loading',
+        pinned: tab.pinned,
+        index: tab.index,
+        openerPersistentId: openerPersistentId || recentTab.openerPersistentId,
+        updatedAt: now,
+      });
+
+      this.storageManager.setTabMapping(tab.id!, recentTab.persistentId);
+
+      // Update session tab count
+      await db.sessions.where('id').equals(sessionId).modify((session) => {
+        session.tabCount = (session.tabCount || 0) + 1;
+        session.updatedAt = now;
+      });
+
+      // Update window tab count
+      if (windowPersistentId) {
+        await db.windows.where('persistentId').equals(windowPersistentId).modify((window) => {
+          window.tabCount = (window.tabCount || 0) + 1;
+          window.updatedAt = now;
+        });
+      }
+
+      return (await db.tabs.get(recentTab.id!))!;
+    }
+
+    // CREATE new tab (genuinely new)
     const persistentId = generateUUID();
     const tabRecord: TrackedTab = {
       persistentId,
@@ -75,9 +122,12 @@ export class TabTracker {
       lastActivatedAt: tab.active ? now : 0,
       totalActiveTime: 0,
       sessionId,
+      windowPersistentId: windowPersistentId || '',
       isSaved: false,
+      isPinned: false,
+      visitCount: 0,
       tags: [],
-      notes: '',
+      notes: null,
       customMetadata: {},
       closedAt: null,
       updatedAt: now,
@@ -100,7 +150,7 @@ export class TabTracker {
       });
     }
 
-    console.log(`[TabTracker] Created tab: ${persistentId} (${url.substring(0, 50)}...)`);
+    console.log(`[TabTracker] Created NEW tab: ${persistentId} (${url.substring(0, 50)}...)`);
     return tabRecord;
   }
 

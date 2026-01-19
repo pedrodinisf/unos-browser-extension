@@ -3,6 +3,8 @@ import { ref, onMounted, computed } from 'vue';
 import type { TrackedTab, TrackedWindow } from '../../src/db/types';
 import MetadataPanel from './components/MetadataPanel.vue';
 import ExportDialog from './components/ExportDialog.vue';
+import DebugPanel from './components/DebugPanel.vue';
+import AllWindowsView from './components/AllWindowsView.vue';
 
 // State
 const currentTab = ref<TrackedTab | null>(null);
@@ -12,6 +14,7 @@ const loading = ref(true);
 const error = ref<string | null>(null);
 const showMetadataPanel = ref(false);
 const showExportDialog = ref(false);
+const activeView = ref<'recent' | 'windows' | 'debug'>('recent');
 
 // Computed
 const tabCount = computed(() => tabs.value.filter(t => !t.closedAt).length);
@@ -120,6 +123,34 @@ async function handleSaveTab() {
 function handleShare() {
   // Placeholder for PKM integration
   alert('PKM integration coming soon!');
+}
+
+async function switchToTab(tab: TrackedTab) {
+  try {
+    await sendMessage({
+      type: 'SWITCH_TO_TAB',
+      chromeTabId: tab.chromeTabId,
+      chromeWindowId: tab.chromeWindowId,
+    });
+    // Close popup after switching
+    window.close();
+  } catch (err) {
+    console.error('Failed to switch to tab:', err);
+  }
+}
+
+async function closeTab(tab: TrackedTab, event: Event) {
+  event.stopPropagation();
+  try {
+    await sendMessage({
+      type: 'CLOSE_TAB',
+      chromeTabId: tab.chromeTabId,
+    });
+    // Remove from local state
+    tabs.value = tabs.value.filter(t => t.persistentId !== tab.persistentId);
+  } catch (err) {
+    console.error('Failed to close tab:', err);
+  }
 }
 
 // Lifecycle
@@ -260,17 +291,43 @@ onMounted(() => {
           />
         </div>
 
-        <!-- Right column: Recent tabs -->
+        <!-- Right column: Tabs with different views -->
         <div class="right-column">
-          <section class="recent-tabs-section">
-            <h3 class="section-title">Recent Tabs ({{ recentTabs.length }})</h3>
+          <!-- View tabs -->
+          <div class="view-tabs">
+            <button
+              class="view-tab"
+              :class="{ active: activeView === 'recent' }"
+              @click="activeView = 'recent'"
+            >
+              📊 Recent
+            </button>
+            <button
+              class="view-tab"
+              :class="{ active: activeView === 'windows' }"
+              @click="activeView = 'windows'"
+            >
+              🪟 Windows
+            </button>
+            <button
+              class="view-tab"
+              :class="{ active: activeView === 'debug' }"
+              @click="activeView = 'debug'"
+            >
+              🔧 Debug
+            </button>
+          </div>
 
+          <!-- Recent Tabs View -->
+          <section v-if="activeView === 'recent'" class="view-content recent-tabs-section">
             <div class="tabs-list">
               <div
                 v-for="tab in recentTabs"
                 :key="tab.persistentId"
                 class="tab-item"
                 :class="{ 'is-current': currentTab && tab.persistentId === currentTab.persistentId }"
+                @click="switchToTab(tab)"
+                title="Click to switch to this tab"
               >
                 <img
                   v-if="tab.faviconUrl"
@@ -291,6 +348,13 @@ onMounted(() => {
                     </span>
                   </div>
                 </div>
+                <button
+                  class="tab-item-close"
+                  @click="closeTab(tab, $event)"
+                  title="Close tab"
+                >
+                  ×
+                </button>
               </div>
 
               <div v-if="recentTabs.length === 0" class="empty-state">
@@ -299,6 +363,20 @@ onMounted(() => {
               </div>
             </div>
           </section>
+
+          <!-- All Windows View -->
+          <AllWindowsView
+            v-else-if="activeView === 'windows'"
+            :windows="windows"
+            :tabs="tabs"
+            class="view-content"
+          />
+
+          <!-- Debug Panel -->
+          <DebugPanel
+            v-else-if="activeView === 'debug'"
+            class="view-content"
+          />
         </div>
       </div>
     </main>
@@ -702,6 +780,44 @@ onMounted(() => {
   overflow-y: auto;
 }
 
+/* View tabs */
+.view-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.view-tab {
+  flex: 1;
+  background: rgba(42, 42, 74, 0.4);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #888;
+  transition: all 0.2s;
+  font-weight: 500;
+}
+
+.view-tab:hover {
+  background: rgba(58, 58, 90, 0.6);
+  color: #ddd;
+}
+
+.view-tab.active {
+  background: rgba(99, 102, 241, 0.3);
+  border-color: rgba(99, 102, 241, 0.5);
+  color: #fff;
+}
+
+.view-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
 /* Recent tabs section */
 .recent-tabs-section {
   background: rgba(42, 42, 74, 0.6);
@@ -711,7 +827,8 @@ onMounted(() => {
   backdrop-filter: blur(10px);
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  overflow: hidden;
 }
 
 .section-title {
@@ -801,6 +918,32 @@ onMounted(() => {
 
 .tab-item-saved, .tab-item-tags {
   font-size: 10px;
+}
+
+.tab-item-close {
+  opacity: 0;
+  background: rgba(239, 68, 68, 0.2);
+  border: none;
+  color: #ef4444;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.tab-item:hover .tab-item-close {
+  opacity: 1;
+}
+
+.tab-item-close:hover {
+  background: rgba(239, 68, 68, 0.4);
 }
 
 .empty-state {

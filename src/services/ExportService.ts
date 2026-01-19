@@ -1,4 +1,4 @@
-import { getDatabase } from '../db/schema';
+import JSZip from 'jszip';
 import type {
   TrackedTab,
   TrackedWindow,
@@ -9,15 +9,13 @@ import type {
   ExportData,
   ExportManifest,
   ExportFilters,
-  TabCSVRow,
 } from '../db/types';
-import { getStorageManager, type StorageManager } from './StorageManager';
 
 /**
  * Export options
  */
 export interface ExportOptions {
-  format: 'json' | 'csv';
+  format: 'json' | 'csv' | 'zip';
   scope: 'current-window' | 'all-windows' | 'session' | 'custom';
   filters?: Partial<ExportFilters>;
   includeVisitHistory?: boolean;
@@ -25,416 +23,389 @@ export interface ExportOptions {
 }
 
 /**
- * ExportService - Handles data export and import
+ * All data fetched from background script
+ */
+interface AllData {
+  sessions: Session[];
+  windows: TrackedWindow[];
+  tabs: TrackedTab[];
+  visits: TabVisit[];
+  relationships: TabRelationship[];
+  tags: Tag[];
+}
+
+/**
+ * Send message to background script
+ */
+async function sendMessage<T>(message: Record<string, unknown>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (!response?.success) {
+        reject(new Error(response?.error || 'Unknown error'));
+        return;
+      }
+      resolve(response.data as T);
+    });
+  });
+}
+
+/**
+ * ExportService - Handles data export (runs in popup context)
  */
 export class ExportService {
-  private storageManager: StorageManager;
-
-  constructor(storageManager?: StorageManager) {
-    this.storageManager = storageManager || getStorageManager();
-  }
-
   /**
    * Export data based on options
    */
-  async export(options: ExportOptions): Promise<string> {
-    const data = await this.gatherExportData(options);
+  async export(options: ExportOptions): Promise<string | Blob> {
+    // Get all data from background script
+    const data = await sendMessage<AllData>({ type: 'GET_ALL_DATA' });
 
-    if (options.format === 'csv') {
-      return this.toCSV(data);
+    if (options.format === 'zip') {
+      return this.toZip(data);
     }
 
-    return this.toJSON(data);
+    if (options.format === 'csv') {
+      return this.tabsToCSV(data.tabs, data.windows);
+    }
+
+    return this.toJSON(data, options);
   }
 
   /**
-   * Gather data for export based on options
+   * Convert to JSON string
    */
-  private async gatherExportData(options: ExportOptions): Promise<ExportData> {
-    const db = getDatabase();
-    const sessionId = this.storageManager.getCurrentSessionId();
-
-    let tabs: TrackedTab[] = [];
-    let windows: TrackedWindow[] = [];
-    let sessions: Session[] = [];
-    let visits: TabVisit[] = [];
-    let relationships: TabRelationship[] = [];
-    let tags: Tag[] = [];
-
-    const includeIncognito = options.filters?.includeIncognito ?? true;
-
-    switch (options.scope) {
-      case 'current-window': {
-        const activeWindowId = this.storageManager.getActiveWindowPersistentId();
-        if (activeWindowId) {
-          const window = await db.windows
-            .where('persistentId')
-            .equals(activeWindowId)
-            .first();
-          if (window && (includeIncognito || !window.incognito)) {
-            windows = [window];
-            tabs = await db.tabs
-              .where('chromeWindowId')
-              .equals(window.chromeWindowId)
-              .toArray();
-          }
-        }
-        break;
-      }
-
-      case 'all-windows': {
-        if (sessionId) {
-          windows = await db.windows
-            .where('sessionId')
-            .equals(sessionId)
-            .filter((w) => includeIncognito || !w.incognito)
-            .toArray();
-          tabs = await db.tabs
-            .where('sessionId')
-            .equals(sessionId)
-            .toArray();
-
-          // Filter tabs to only include those from included windows
-          if (!includeIncognito) {
-            const windowIds = new Set(windows.map((w) => w.chromeWindowId));
-            tabs = tabs.filter((t) => windowIds.has(t.chromeWindowId));
-          }
-        }
-        break;
-      }
-
-      case 'session': {
-        const targetSessionIds = options.filters?.sessionIds || (sessionId ? [sessionId] : []);
-        for (const sid of targetSessionIds) {
-          const session = await db.sessions.get(sid);
-          if (session) sessions.push(session);
-
-          const sessionWindows = await db.windows
-            .where('sessionId')
-            .equals(sid)
-            .filter((w) => includeIncognito || !w.incognito)
-            .toArray();
-          windows.push(...sessionWindows);
-
-          const sessionTabs = await db.tabs
-            .where('sessionId')
-            .equals(sid)
-            .toArray();
-
-          if (!includeIncognito) {
-            const windowIds = new Set(sessionWindows.map((w) => w.chromeWindowId));
-            tabs.push(...sessionTabs.filter((t) => windowIds.has(t.chromeWindowId)));
-          } else {
-            tabs.push(...sessionTabs);
-          }
-        }
-        break;
-      }
-
-      case 'custom': {
-        const filters = options.filters || {};
-
-        // Start with all sessions if none specified
-        const targetSessionIds = filters.sessionIds || [];
-        if (targetSessionIds.length === 0 && sessionId) {
-          targetSessionIds.push(sessionId);
-        }
-
-        for (const sid of targetSessionIds) {
-          const session = await db.sessions.get(sid);
-          if (session) sessions.push(session);
-        }
-
-        // Get windows
-        if (filters.windowIds && filters.windowIds.length > 0) {
-          for (const wid of filters.windowIds) {
-            const window = await db.windows.where('persistentId').equals(wid).first();
-            if (window && (includeIncognito || !window.incognito)) {
-              windows.push(window);
-            }
-          }
-        } else {
-          for (const sid of targetSessionIds) {
-            const sessionWindows = await db.windows
-              .where('sessionId')
-              .equals(sid)
-              .filter((w) => includeIncognito || !w.incognito)
-              .toArray();
-            windows.push(...sessionWindows);
-          }
-        }
-
-        // Get tabs
-        const windowIds = new Set(windows.map((w) => w.chromeWindowId));
-        for (const sid of targetSessionIds) {
-          let sessionTabs = await db.tabs
-            .where('sessionId')
-            .equals(sid)
-            .toArray();
-
-          // Filter by window
-          sessionTabs = sessionTabs.filter((t) => windowIds.has(t.chromeWindowId));
-
-          // Filter by date range
-          if (filters.dateRange) {
-            sessionTabs = sessionTabs.filter(
-              (t) =>
-                t.createdAt >= filters.dateRange!.start &&
-                t.createdAt <= filters.dateRange!.end
-            );
-          }
-
-          // Filter by tags
-          if (filters.tags && filters.tags.length > 0) {
-            const tagSet = new Set(filters.tags);
-            sessionTabs = sessionTabs.filter((t) =>
-              t.tags.some((tag) => tagSet.has(tag))
-            );
-          }
-
-          tabs.push(...sessionTabs);
-        }
-        break;
-      }
-    }
-
-    // Get visit history if requested
-    if (options.includeVisitHistory) {
-      const tabIds = new Set(tabs.map((t) => t.persistentId));
-      visits = await db.tabVisits
-        .filter((v) => tabIds.has(v.tabPersistentId))
-        .toArray();
-    }
-
-    // Get relationships if requested
-    if (options.includeRelationships) {
-      const tabIds = new Set(tabs.map((t) => t.persistentId));
-      relationships = await db.tabRelationships
-        .filter(
-          (r) => tabIds.has(r.sourceTabPersistentId) || tabIds.has(r.targetTabPersistentId)
-        )
-        .toArray();
-    }
-
-    // Get all tags
-    tags = await db.tags.toArray();
-
-    // Build manifest
+  private toJSON(data: AllData, options: ExportOptions): string {
     const manifest: ExportManifest = {
       version: '1.0.0',
       exportedAt: Date.now(),
-      exportType: options.scope === 'custom' ? 'filtered' : options.scope === 'session' ? 'session' :
-                  options.scope === 'current-window' ? 'window' : 'full',
+      exportType: options.scope === 'session' ? 'session' : 'full',
       filters: {
-        sessionIds: sessions.map((s) => s.id),
-        windowIds: windows.map((w) => w.persistentId),
-        includeIncognito,
-        includeVisitHistory: options.includeVisitHistory ?? false,
-        ...options.filters,
+        includeIncognito: options.filters?.includeIncognito ?? true,
+        includeVisitHistory: options.includeVisitHistory ?? true,
       },
       stats: {
-        sessionCount: sessions.length,
-        windowCount: windows.length,
-        tabCount: tabs.length,
-        visitCount: visits.length,
+        sessionCount: data.sessions.length,
+        windowCount: data.windows.length,
+        tabCount: data.tabs.length,
+        visitCount: data.visits.length,
       },
     };
 
-    return {
+    const exportData: ExportData = {
       manifest,
-      sessions,
-      windows,
-      tabs,
-      visits: options.includeVisitHistory ? visits : undefined,
-      relationships: options.includeRelationships ? relationships : undefined,
-      tags: tags.length > 0 ? tags : undefined,
+      sessions: data.sessions,
+      windows: data.windows,
+      tabs: data.tabs,
+      visits: options.includeVisitHistory ? data.visits : undefined,
+      relationships: options.includeRelationships ? data.relationships : undefined,
+      tags: data.tags.length > 0 ? data.tags : undefined,
     };
+
+    return JSON.stringify(exportData, null, 2);
   }
 
   /**
-   * Convert export data to JSON string
+   * Convert tabs to CSV string
    */
-  private toJSON(data: ExportData): string {
-    return JSON.stringify(data, null, 2);
-  }
+  private tabsToCSV(tabs: TrackedTab[], windows: TrackedWindow[]): string {
+    const headers = [
+      'persistentId',
+      'chromeTabId',
+      'url',
+      'title',
+      'createdAt',
+      'lastActivatedAt',
+      'totalActiveTimeMinutes',
+      'windowPersistentId',
+      'chromeWindowId',
+      'sessionId',
+      'index',
+      'pinned',
+      'groupId',
+      'tags',
+      'notes',
+      'isIncognito',
+      'isSaved',
+      'closedAt',
+    ];
 
-  /**
-   * Convert export data to CSV string (tabs only)
-   */
-  private toCSV(data: ExportData): string {
-    // Handle empty data case
-    if (data.tabs.length === 0) {
-      const defaultHeaders: (keyof TabCSVRow)[] = [
-        'persistentId',
-        'url',
-        'title',
-        'createdAt',
-        'lastActivatedAt',
-        'totalActiveTimeMinutes',
-        'windowPersistentId',
-        'sessionId',
-        'tags',
-        'notes',
-        'isIncognito',
-        'isSaved',
-      ];
-      return defaultHeaders.join(',');
-    }
+    const windowMap = new Map(windows.map(w => [w.persistentId, w]));
 
-    const rows: TabCSVRow[] = data.tabs.map((tab) => {
-      // Find the window for incognito status
-      const window = data.windows.find((w) => w.chromeWindowId === tab.chromeWindowId);
-
-      return {
-        persistentId: tab.persistentId,
-        url: tab.url,
-        title: tab.title,
-        createdAt: new Date(tab.createdAt).toISOString(),
-        lastActivatedAt: new Date(tab.lastActivatedAt).toISOString(),
-        totalActiveTimeMinutes: Math.round(tab.totalActiveTime / 60000),
-        windowPersistentId: window?.persistentId || '',
-        sessionId: tab.sessionId,
-        tags: tab.tags.join(', '),
-        notes: tab.notes,
-        isIncognito: window?.incognito ? 'true' : 'false',
-        isSaved: tab.isSaved ? 'true' : 'false',
-      };
+    const rows = tabs.map(tab => {
+      const window = windowMap.get(tab.windowPersistentId);
+      return [
+        tab.persistentId,
+        tab.chromeTabId,
+        this.escapeCSV(tab.url),
+        this.escapeCSV(tab.title),
+        new Date(tab.createdAt).toISOString(),
+        new Date(tab.lastActivatedAt).toISOString(),
+        Math.round(tab.totalActiveTime / 60000),
+        tab.windowPersistentId,
+        tab.chromeWindowId,
+        tab.sessionId,
+        tab.index,
+        tab.pinned,
+        tab.groupId,
+        this.escapeCSV(tab.tags.join('; ')),
+        this.escapeCSV(tab.notes || ''),
+        window?.incognito ? 'true' : 'false',
+        tab.isSaved ? 'true' : 'false',
+        tab.closedAt ? new Date(tab.closedAt).toISOString() : '',
+      ].join(',');
     });
 
-    // Build CSV
-    const headers = Object.keys(rows[0]!) as (keyof TabCSVRow)[];
-    const headerLine = headers.join(',');
-
-    const dataLines = rows.map((row) => {
-      return headers
-        .map((h) => {
-          const value = String(row[h] ?? '');
-          // Escape quotes and wrap in quotes if contains comma, quote, or newline
-          if (value.includes(',') || value.includes('"') || value.includes('\n')) {
-            return `"${value.replace(/"/g, '""')}"`;
-          }
-          return value;
-        })
-        .join(',');
-    });
-
-    return [headerLine, ...dataLines].join('\n');
+    return [headers.join(','), ...rows].join('\n');
   }
 
   /**
-   * Import data from JSON
+   * Create ZIP with all tables as CSV files
    */
-  async importJSON(jsonString: string, options: { merge?: boolean } = {}): Promise<{
-    sessions: number;
-    windows: number;
-    tabs: number;
-  }> {
-    const data: ExportData = JSON.parse(jsonString);
-    const db = getDatabase();
+  private async toZip(data: AllData): Promise<Blob> {
+    const zip = new JSZip();
+    const timestamp = new Date().toISOString().split('T')[0];
 
-    // Validate version
-    if (!data.manifest?.version) {
-      throw new Error('Invalid export format: missing version');
-    }
+    // Sessions CSV (with BOM for Excel compatibility)
+    zip.file(`sessions_${timestamp}.csv`, this.addBOM(this.sessionsToCSV(data.sessions)));
 
-    let importedSessions = 0;
-    let importedWindows = 0;
-    let importedTabs = 0;
+    // Windows CSV
+    zip.file(`windows_${timestamp}.csv`, this.addBOM(this.windowsToCSV(data.windows)));
 
-    // Import sessions
-    for (const session of data.sessions) {
-      if (!options.merge) {
-        // Check if session already exists
-        const existing = await db.sessions.get(session.id);
-        if (existing) continue;
+    // Tabs CSV
+    zip.file(`tabs_${timestamp}.csv`, this.addBOM(this.tabsToCSV(data.tabs, data.windows)));
+
+    // Visits CSV
+    zip.file(`visits_${timestamp}.csv`, this.addBOM(this.visitsToCSV(data.visits)));
+
+    // Relationships CSV
+    zip.file(`relationships_${timestamp}.csv`, this.addBOM(this.relationshipsToCSV(data.relationships)));
+
+    // Tags CSV
+    zip.file(`tags_${timestamp}.csv`, this.addBOM(this.tagsToCSV(data.tags)));
+
+    // Manifest JSON for reference
+    zip.file('manifest.json', JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      version: '1.0.0',
+      stats: {
+        sessions: data.sessions.length,
+        windows: data.windows.length,
+        tabs: data.tabs.length,
+        visits: data.visits.length,
+        relationships: data.relationships.length,
+        tags: data.tags.length,
       }
+    }, null, 2));
 
-      await db.sessions.put({
-        ...session,
-        isActive: false, // Imported sessions are never active
-        updatedAt: Date.now(),
-      });
-      importedSessions++;
+    try {
+      return await zip.generateAsync({ type: 'blob' });
+    } catch (err) {
+      console.error('[ExportService] Failed to generate ZIP:', err);
+      throw new Error('Failed to generate ZIP file');
     }
+  }
 
-    // Import windows
-    for (const window of data.windows) {
-      if (!options.merge) {
-        const existing = await db.windows.where('persistentId').equals(window.persistentId).first();
-        if (existing) continue;
-      }
+  /**
+   * Convert sessions to CSV
+   */
+  private sessionsToCSV(sessions: Session[]): string {
+    const headers = [
+      'id',
+      'name',
+      'description',
+      'startedAt',
+      'endedAt',
+      'isActive',
+      'isSaved',
+      'windowCount',
+      'tabCount',
+      'totalActiveTime',
+      'expiresAt',
+      'tags',
+      'createdAt',
+      'updatedAt',
+    ];
 
-      await db.windows.put({
-        ...window,
-        chromeWindowId: -1, // Imported windows don't have a Chrome ID
-        closedAt: window.closedAt || Date.now(),
-        updatedAt: Date.now(),
-      });
-      importedWindows++;
+    const rows = sessions.map(s => [
+      s.id,
+      this.escapeCSV(s.name),
+      this.escapeCSV(s.description),
+      new Date(s.startedAt).toISOString(),
+      s.endedAt ? new Date(s.endedAt).toISOString() : '',
+      s.isActive,
+      s.isSaved,
+      s.windowCount,
+      s.tabCount,
+      Math.round(s.totalActiveTime / 60000),
+      s.expiresAt ? new Date(s.expiresAt).toISOString() : '',
+      this.escapeCSV(s.tags.join('; ')),
+      new Date(s.createdAt).toISOString(),
+      new Date(s.updatedAt).toISOString(),
+    ].join(','));
+
+    return [headers.join(','), ...rows].join('\n');
+  }
+
+  /**
+   * Convert windows to CSV
+   */
+  private windowsToCSV(windows: TrackedWindow[]): string {
+    const headers = [
+      'persistentId',
+      'chromeWindowId',
+      'type',
+      'state',
+      'incognito',
+      'left',
+      'top',
+      'width',
+      'height',
+      'createdAt',
+      'lastFocusedAt',
+      'totalFocusTimeMinutes',
+      'sessionId',
+      'isSaved',
+      'tabCount',
+      'activeTabPersistentId',
+      'closedAt',
+      'updatedAt',
+    ];
+
+    const rows = windows.map(w => [
+      w.persistentId,
+      w.chromeWindowId,
+      w.type,
+      w.state,
+      w.incognito,
+      w.left,
+      w.top,
+      w.width,
+      w.height,
+      new Date(w.createdAt).toISOString(),
+      new Date(w.lastFocusedAt).toISOString(),
+      Math.round(w.totalFocusTime / 60000),
+      w.sessionId,
+      w.isSaved,
+      w.tabCount,
+      w.activeTabPersistentId || '',
+      w.closedAt ? new Date(w.closedAt).toISOString() : '',
+      new Date(w.updatedAt).toISOString(),
+    ].join(','));
+
+    return [headers.join(','), ...rows].join('\n');
+  }
+
+  /**
+   * Convert visits to CSV
+   */
+  private visitsToCSV(visits: TabVisit[]): string {
+    const headers = [
+      'id',
+      'tabPersistentId',
+      'sessionId',
+      'url',
+      'urlHash',
+      'title',
+      'activatedAt',
+      'deactivatedAt',
+      'durationMinutes',
+      'windowPersistentId',
+      'fromTabPersistentId',
+    ];
+
+    const rows = visits.map(v => [
+      v.id || '',
+      v.tabPersistentId,
+      v.sessionId,
+      this.escapeCSV(v.url),
+      v.urlHash,
+      this.escapeCSV(v.title),
+      new Date(v.activatedAt).toISOString(),
+      v.deactivatedAt ? new Date(v.deactivatedAt).toISOString() : '',
+      Math.round(v.duration / 60000),
+      v.windowPersistentId,
+      v.fromTabPersistentId || '',
+    ].join(','));
+
+    return [headers.join(','), ...rows].join('\n');
+  }
+
+  /**
+   * Convert relationships to CSV
+   */
+  private relationshipsToCSV(relationships: TabRelationship[]): string {
+    const headers = [
+      'id',
+      'sourceTabPersistentId',
+      'targetTabPersistentId',
+      'relationshipType',
+      'createdAt',
+      'strength',
+    ];
+
+    const rows = relationships.map(r => [
+      r.id || '',
+      r.sourceTabPersistentId,
+      r.targetTabPersistentId,
+      r.relationshipType,
+      new Date(r.createdAt).toISOString(),
+      r.strength,
+    ].join(','));
+
+    return [headers.join(','), ...rows].join('\n');
+  }
+
+  /**
+   * Convert tags to CSV
+   */
+  private tagsToCSV(tags: Tag[]): string {
+    const headers = [
+      'id',
+      'name',
+      'color',
+      'createdAt',
+      'usageCount',
+    ];
+
+    const rows = tags.map(t => [
+      t.id || '',
+      this.escapeCSV(t.name),
+      t.color,
+      new Date(t.createdAt).toISOString(),
+      t.usageCount,
+    ].join(','));
+
+    return [headers.join(','), ...rows].join('\n');
+  }
+
+  /**
+   * Escape CSV value
+   */
+  private escapeCSV(value: string): string {
+    if (!value) return '';
+    // Always quote strings that could be misinterpreted
+    if (value.includes(',') || value.includes('"') || value.includes('\n') || value.includes('\r') || value.includes(';')) {
+      return `"${value.replace(/"/g, '""')}"`;
     }
+    return value;
+  }
 
-    // Import tabs
-    for (const tab of data.tabs) {
-      if (!options.merge) {
-        const existing = await db.tabs.where('persistentId').equals(tab.persistentId).first();
-        if (existing) continue;
-      }
-
-      await db.tabs.put({
-        ...tab,
-        chromeTabId: -1, // Imported tabs don't have a Chrome ID
-        closedAt: tab.closedAt || Date.now(),
-        updatedAt: Date.now(),
-      });
-      importedTabs++;
-    }
-
-    // Import visits if present
-    if (data.visits) {
-      for (const visit of data.visits) {
-        await db.tabVisits.put(visit);
-      }
-    }
-
-    // Import relationships if present
-    if (data.relationships) {
-      for (const rel of data.relationships) {
-        const existing = await db.tabRelationships
-          .where('[sourceTabPersistentId+relationshipType]')
-          .equals([rel.sourceTabPersistentId, rel.relationshipType])
-          .filter((r) => r.targetTabPersistentId === rel.targetTabPersistentId)
-          .first();
-
-        if (!existing) {
-          await db.tabRelationships.add(rel);
-        }
-      }
-    }
-
-    // Import tags if present
-    if (data.tags) {
-      for (const tag of data.tags) {
-        const existing = await db.tags.where('name').equals(tag.name).first();
-        if (!existing) {
-          await db.tags.add(tag);
-        }
-      }
-    }
-
-    console.log(`[ExportService] Imported ${importedSessions} sessions, ${importedWindows} windows, ${importedTabs} tabs`);
-
-    return {
-      sessions: importedSessions,
-      windows: importedWindows,
-      tabs: importedTabs,
-    };
+  /**
+   * Add UTF-8 BOM for Excel compatibility
+   */
+  private addBOM(csv: string): string {
+    return '\uFEFF' + csv;
   }
 
   /**
    * Download data as a file
    */
-  downloadFile(content: string, filename: string, mimeType: string): void {
-    const blob = new Blob([content], { type: mimeType });
+  downloadFile(content: string | Blob, filename: string, mimeType?: string): void {
+    const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType || 'text/plain' });
     const url = URL.createObjectURL(blob);
 
     const a = document.createElement('a');
@@ -451,7 +422,7 @@ export class ExportService {
   async exportAndDownloadJSON(options: Omit<ExportOptions, 'format'>): Promise<void> {
     const data = await this.export({ ...options, format: 'json' });
     const filename = `unos-export-${new Date().toISOString().split('T')[0]}.json`;
-    this.downloadFile(data, filename, 'application/json');
+    this.downloadFile(data as string, filename, 'application/json');
   }
 
   /**
@@ -460,7 +431,17 @@ export class ExportService {
   async exportAndDownloadCSV(options: Omit<ExportOptions, 'format'>): Promise<void> {
     const data = await this.export({ ...options, format: 'csv' });
     const filename = `unos-tabs-${new Date().toISOString().split('T')[0]}.csv`;
-    this.downloadFile(data, filename, 'text/csv');
+    // Add BOM for Excel compatibility
+    this.downloadFile(this.addBOM(data as string), filename, 'text/csv;charset=utf-8');
+  }
+
+  /**
+   * Export and download as ZIP (all tables)
+   */
+  async exportAndDownloadZIP(): Promise<void> {
+    const data = await this.export({ format: 'zip', scope: 'session' });
+    const filename = `unos-export-${new Date().toISOString().split('T')[0]}.zip`;
+    this.downloadFile(data as Blob, filename, 'application/zip');
   }
 }
 

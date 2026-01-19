@@ -6,6 +6,7 @@ import { getStorageManager } from '../src/services/StorageManager';
 import { getTabTracker } from '../src/services/TabTracker';
 import { getWindowTracker } from '../src/services/WindowTracker';
 import { getRelationshipManager } from '../src/services/RelationshipManager';
+import { getInitializationService } from '../src/services/InitializationService';
 import { TIMING, ALARM_NAMES } from '../src/constants';
 
 export default defineBackground(() => {
@@ -17,12 +18,31 @@ export default defineBackground(() => {
   const windowTracker = getWindowTracker();
   const relationshipManager = getRelationshipManager();
 
+  // Event logging helper for debugging
+  const recentEvents: Array<{ type: string; data: string; timestamp: number }> = [];
+  const MAX_EVENTS = 50;
+
+  function logEvent(type: string, data: any) {
+    const event = {
+      type,
+      data: typeof data === 'object' ? JSON.stringify(data).slice(0, 100) : String(data),
+      timestamp: Date.now(),
+    };
+    recentEvents.unshift(event);
+    if (recentEvents.length > MAX_EVENTS) {
+      recentEvents.pop();
+    }
+    // Store in chrome.storage.local for persistence
+    chrome.storage.local.set({ recentEvents: recentEvents.slice(0, 10) }).catch(console.error);
+  }
+
   // ============================================
   // TAB EVENTS - Register synchronously
   // ============================================
 
   chrome.tabs.onCreated.addListener((tab) => {
     console.log('[UNOS] Tab created:', tab.id);
+    logEvent('TAB_CREATED', `id:${tab.id} url:${tab.url?.slice(0, 50)}`);
     tabTracker.handleTabCreated(tab).then(async (tabRecord) => {
       if (tabRecord && tabRecord.openerPersistentId) {
         // Track opener relationship
@@ -53,6 +73,7 @@ export default defineBackground(() => {
 
   chrome.tabs.onActivated.addListener((activeInfo) => {
     console.log('[UNOS] Tab activated:', activeInfo.tabId);
+    logEvent('TAB_ACTIVATED', `id:${activeInfo.tabId} window:${activeInfo.windowId}`);
     tabTracker.handleTabActivated(activeInfo).catch(console.error);
   });
 
@@ -97,8 +118,9 @@ export default defineBackground(() => {
   // LIFECYCLE EVENTS
   // ============================================
 
-  chrome.runtime.onInstalled.addListener((details) => {
+  chrome.runtime.onInstalled.addListener(async (details) => {
     console.log('[UNOS] Extension installed/updated:', details.reason);
+    logEvent('EXTENSION_INSTALLED', details.reason);
 
     // Create alarms for periodic tasks
     chrome.alarms.create(ALARM_NAMES.FLUSH_WRITES, {
@@ -113,13 +135,20 @@ export default defineBackground(() => {
       periodInMinutes: TIMING.RELATIONSHIP_ALARM_MINUTES,
     });
 
-    // Initialize storage and reconcile state
-    storageManager.reconcileOnStartup().then((session) => {
-      console.log('[UNOS] Reconciliation complete. Session:', session.id);
-    }).catch(console.error);
+    // CRITICAL: Wait for initialization to complete
+    try {
+      const initService = getInitializationService();
+      await initService.initialize();
+      const status = await initService.getStatus();
+      console.log('[UNOS] ✓ Initialization complete:', status);
+      logEvent('INIT_COMPLETE', JSON.stringify(status));
+    } catch (err) {
+      console.error('[UNOS] ✗ Initialization failed:', err);
+      logEvent('INIT_FAILED', err instanceof Error ? err.message : String(err));
+    }
   });
 
-  chrome.runtime.onStartup.addListener(() => {
+  chrome.runtime.onStartup.addListener(async () => {
     console.log('[UNOS] Browser startup detected');
 
     // Ensure alarms exist
@@ -147,10 +176,15 @@ export default defineBackground(() => {
       }
     });
 
-    // Reconcile state
-    storageManager.reconcileOnStartup().then((session) => {
-      console.log('[UNOS] Startup reconciliation complete. Session:', session.id);
-    }).catch(console.error);
+    // CRITICAL: Wait for initialization to complete
+    try {
+      const initService = getInitializationService();
+      await initService.initialize();
+      const status = await initService.getStatus();
+      console.log('[UNOS] ✓ Startup reconciliation complete:', status);
+    } catch (err) {
+      console.error('[UNOS] ✗ Startup reconciliation failed:', err);
+    }
   });
 
   // ============================================
@@ -251,6 +285,98 @@ export default defineBackground(() => {
             const { persistentId, limit } = message;
             const visits = await tabTracker.getTabVisits(persistentId, limit);
             sendResponse({ success: true, data: visits });
+            break;
+          }
+
+          case 'PING': {
+            sendResponse({ success: true, data: { pong: true, timestamp: Date.now() } });
+            break;
+          }
+
+          case 'SWITCH_TO_TAB': {
+            const { chromeTabId, chromeWindowId } = message;
+            // Focus the window first, then activate the tab
+            await chrome.windows.update(chromeWindowId, { focused: true });
+            await chrome.tabs.update(chromeTabId, { active: true });
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'CLOSE_TAB': {
+            const { chromeTabId } = message;
+            await chrome.tabs.remove(chromeTabId);
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'MOVE_TAB_TO_WINDOW': {
+            const { chromeTabId, targetWindowId, index } = message;
+            await chrome.tabs.move(chromeTabId, { windowId: targetWindowId, index: index ?? -1 });
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'REORDER_TAB': {
+            const { chromeTabId, newIndex } = message;
+            await chrome.tabs.move(chromeTabId, { index: newIndex });
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'GET_ALL_DATA': {
+            // Get all data for export - runs in background context with full DB access
+            const db = storageManager.getDB();
+            const sessionId = message.sessionId || storageManager.getCurrentSessionId();
+
+            const [sessions, windows, tabs, visits, relationships, tags] = await Promise.all([
+              sessionId ? db.sessions.where('id').equals(sessionId).toArray() : db.sessions.toArray(),
+              sessionId ? db.windows.where('sessionId').equals(sessionId).toArray() : db.windows.toArray(),
+              sessionId ? db.tabs.where('sessionId').equals(sessionId).toArray() : db.tabs.toArray(),
+              db.tabVisits.toArray(),
+              db.tabRelationships.toArray(),
+              db.tags.toArray(),
+            ]);
+
+            sendResponse({
+              success: true,
+              data: { sessions, windows, tabs, visits, relationships, tags }
+            });
+            break;
+          }
+
+          case 'GET_DEBUG_STATS': {
+            const db = storageManager.getDB();
+            const initService = getInitializationService();
+            const initStatus = await initService.getStatus();
+            const stats = {
+              ...initStatus,
+              visitCount: await db.tabVisits.count(),
+              relationshipCount: await db.tabRelationships.count(),
+            };
+            sendResponse({ success: true, data: stats });
+            break;
+          }
+
+          case 'GET_RECENT_EVENTS': {
+            // Get recent events from storage if available
+            const events = (await chrome.storage.local.get('recentEvents')).recentEvents || [];
+            sendResponse({ success: true, data: events });
+            break;
+          }
+
+          case 'FORCE_RECONCILE': {
+            const initService = getInitializationService();
+            await initService.initialize();
+            const status = await initService.getStatus();
+            sendResponse({ success: true, data: status });
+            break;
+          }
+
+          case 'FORCE_INIT': {
+            const initService = getInitializationService();
+            await initService.initialize();
+            const status = await initService.getStatus();
+            sendResponse({ success: true, data: status });
             break;
           }
 
