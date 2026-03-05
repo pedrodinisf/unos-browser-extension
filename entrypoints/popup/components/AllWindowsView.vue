@@ -138,7 +138,6 @@ async function switchToTab(tab: TrackedTab) {
       chromeTabId: tab.chromeTabId,
       chromeWindowId: tab.chromeWindowId,
     });
-    window.close();
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to switch tab';
     console.error('Failed to switch to tab:', err);
@@ -264,12 +263,12 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
           class="tool-btn"
           :class="{ active: showCompact }"
           @click="showCompact = !showCompact"
-          title="Toggle compact view"
+          :title="showCompact ? 'Switch to expanded view' : 'Switch to compact view'"
         >
           {{ showCompact ? '&#9636;' : '&#9638;' }}
         </button>
-        <button class="tool-btn" @click="expandAll" title="Expand all">+</button>
-        <button class="tool-btn" @click="collapseAll" title="Collapse all">&minus;</button>
+        <button class="tool-btn" @click="expandAll" title="Expand all windows">+</button>
+        <button class="tool-btn" @click="collapseAll" title="Collapse all windows">&minus;</button>
       </div>
     </div>
 
@@ -309,12 +308,11 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
         <!-- Window header -->
         <div class="window-header" @click="toggleWindow(win.persistentId)">
           <span class="collapse-icon">{{ collapsedWindows.has(win.persistentId) ? '&#9654;' : '&#9660;' }}</span>
-          <span class="window-id">W{{ win.chromeWindowId }}</span>
+          <span class="window-id">Window {{ openWindows.indexOf(win) + 1 }}</span>
+          <span class="window-chrome-id">({{ win.chromeWindowId }})</span>
           <span class="window-count">{{ getWindowTabCount(win.persistentId) }} tabs</span>
+          <button class="window-btn" @click.stop="focusWindow(win)" title="Focus window">&#8599;</button>
           <span v-if="win.incognito" class="incognito-badge">incog</span>
-          <div class="window-actions">
-            <button class="window-btn" @click.stop="focusWindow(win)" title="Focus window">&#8599;</button>
-          </div>
         </div>
 
         <!-- Tabs grid/list -->
@@ -525,6 +523,12 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
   font-family: var(--font-mono);
 }
 
+.window-chrome-id {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
 .window-count {
   font-size: 10px;
   color: var(--text-secondary);
@@ -537,12 +541,6 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
   font-size: 9px;
   color: var(--text-muted);
   font-style: italic;
-}
-
-.window-actions {
-  margin-left: auto;
-  display: flex;
-  gap: 4px;
 }
 
 .window-btn {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, onUnmounted, computed } from 'vue';
 import type { TrackedTab, TrackedWindow } from '../../src/db/types';
 import MetadataPanel from './components/MetadataPanel.vue';
 import ExportDialog from './components/ExportDialog.vue';
@@ -15,6 +15,7 @@ const error = ref<string | null>(null);
 const showMetadataPanel = ref(false);
 const showExportDialog = ref(false);
 const activeView = ref<'recent' | 'windows' | 'debug'>('recent');
+const showToolsMenu = ref(false);
 
 // Computed
 const tabCount = computed(() => tabs.value.filter(t => !t.closedAt).length);
@@ -148,8 +149,6 @@ async function switchToTab(tab: TrackedTab) {
       chromeTabId: tab.chromeTabId,
       chromeWindowId: tab.chromeWindowId,
     });
-    // Close popup after switching
-    window.close();
   } catch (err) {
     console.error('Failed to switch to tab:', err);
   }
@@ -169,9 +168,33 @@ async function closeTab(tab: TrackedTab, event: Event) {
   }
 }
 
+// Clipboard helpers
+async function copyTitle() {
+  if (!currentTab.value) return;
+  await navigator.clipboard.writeText(currentTab.value.title || 'Untitled');
+}
+
+async function copyUrl() {
+  if (!currentTab.value) return;
+  await navigator.clipboard.writeText(currentTab.value.url);
+}
+
+// Click-outside handler for tools menu
+function handleClickOutside(e: MouseEvent) {
+  const wrapper = document.querySelector('.tools-wrapper');
+  if (wrapper && !wrapper.contains(e.target as Node)) {
+    showToolsMenu.value = false;
+  }
+}
+
 // Lifecycle
 onMounted(() => {
   loadData();
+  document.addEventListener('click', handleClickOutside);
+});
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside);
 });
 </script>
 
@@ -188,8 +211,24 @@ onMounted(() => {
         <span class="stat-pill">{{ windowCount }} win</span>
         <span class="stat-pill">{{ totalActiveTime }}</span>
       </div>
-      <div class="header-right">
-        <button class="header-btn" @click="showExportDialog = true">Export</button>
+      <div class="header-right tools-wrapper">
+        <button class="tools-trigger" @click="showToolsMenu = !showToolsMenu">
+          TOOLS <span class="tools-caret">&#9662;</span>
+        </button>
+        <div v-if="showToolsMenu" class="tools-dropdown">
+          <button class="tools-item" @click="showExportDialog = true; showToolsMenu = false">
+            <span class="tools-item-label">Export</span>
+            <span class="tools-item-status tools-item-active">ACTIVE</span>
+          </button>
+          <button class="tools-item tools-item-disabled" disabled>
+            <span class="tools-item-label">URL Grepper</span>
+            <span class="tools-item-status tools-item-soon">SOON</span>
+          </button>
+          <button class="tools-item tools-item-disabled" disabled>
+            <span class="tools-item-label">Scroll Screenshot</span>
+            <span class="tools-item-status tools-item-soon">SOON</span>
+          </button>
+        </div>
       </div>
     </header>
 
@@ -216,7 +255,11 @@ onMounted(() => {
           alt=""
         />
         <span v-else class="ctb-favicon-placeholder">&#9675;</span>
-        <span class="ctb-title">{{ currentTab.title || 'Untitled' }}</span>
+        <span class="ctb-title-group">
+          <span class="ctb-title">{{ currentTab.title || 'Untitled' }}</span>
+          <button class="ctb-copy" @click="copyTitle" title="Copy title">&#128203;</button>
+          <button class="ctb-copy" @click="copyUrl" title="Copy URL">&#128279;</button>
+        </span>
         <span class="ctb-domain">{{ getDomain(currentTab.url) }}</span>
         <span class="ctb-time">{{ formatDuration(currentTab.totalActiveTime || 0) }}</span>
         <span class="ctb-created">{{ formatUTCTime(currentTab.createdAt) }}</span>
@@ -321,6 +364,13 @@ onMounted(() => {
 </template>
 
 <style>
+html, body {
+  width: 700px;
+  height: 600px;
+  margin: 0;
+  padding: 0;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -329,7 +379,7 @@ onMounted(() => {
 
 .popup {
   width: 700px;
-  height: 700px;
+  height: 600px;
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: var(--bg-page);
@@ -338,10 +388,10 @@ onMounted(() => {
   flex-direction: column;
 
   /* Theme: Off-white + Green/Amber */
-  --bg-page: #FAFAF5;
+  --bg-page: #F5F4EE;
   --bg-card: #F5F5F0;
   --bg-alt: #EEEDE8;
-  --bg-header: #1C2618;
+  --bg-header: #2A3328;
   --bg-overlay: rgba(0, 0, 0, 0.5);
 
   --text-primary: #2D2D2D;
@@ -409,19 +459,104 @@ onMounted(() => {
   gap: 6px;
 }
 
-.header-btn {
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+.tools-wrapper {
+  position: relative;
+}
+
+.tools-trigger {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(5, 150, 105, 0.35);
   padding: 4px 12px;
   border-radius: 4px;
   cursor: pointer;
   font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  letter-spacing: 1.5px;
   color: var(--text-inverse);
-  transition: background 0.15s;
+  transition: all 0.15s;
 }
 
-.header-btn:hover {
-  background: rgba(255, 255, 255, 0.22);
+.tools-trigger:hover {
+  background: rgba(5, 150, 105, 0.15);
+  border-color: rgba(5, 150, 105, 0.5);
+}
+
+.tools-caret {
+  font-size: 10px;
+  margin-left: 2px;
+  opacity: 0.7;
+}
+
+.tools-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 200px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-warm);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  z-index: 50;
+  overflow: hidden;
+}
+
+.tools-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 9px 14px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border-light);
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-primary);
+  transition: background 0.12s;
+  text-align: left;
+}
+
+.tools-item:last-child {
+  border-bottom: none;
+}
+
+.tools-item:hover:not(:disabled) {
+  background: rgba(5, 150, 105, 0.08);
+}
+
+.tools-item-label {
+  font-weight: 500;
+}
+
+.tools-item-status {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 8px;
+}
+
+.tools-item-active {
+  background: rgba(5, 150, 105, 0.12);
+  color: var(--accent-green);
+  border: 1px solid rgba(5, 150, 105, 0.25);
+}
+
+.tools-item-soon {
+  background: rgba(217, 119, 6, 0.1);
+  color: var(--accent-amber);
+  border: 1px solid rgba(217, 119, 6, 0.2);
+}
+
+.tools-item-disabled {
+  cursor: default;
+  color: var(--text-muted);
+}
+
+.tools-item-disabled .tools-item-label {
+  font-weight: 400;
 }
 
 /* ── Loading & Error ── */
@@ -502,6 +637,38 @@ onMounted(() => {
   text-overflow: ellipsis;
   max-width: 180px;
   flex-shrink: 1;
+}
+
+.ctb-title-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+}
+
+.ctb-copy {
+  display: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 1px 3px;
+  border-radius: 3px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  transition: all 0.12s;
+  line-height: 1;
+}
+
+.ctb-title-group:hover .ctb-copy {
+  display: inline-flex;
+}
+
+.ctb-copy:hover {
+  background: var(--bg-alt);
+  color: var(--accent-green);
 }
 
 .ctb-domain {
