@@ -32,8 +32,29 @@ const recentTabs = computed(() => {
   return tabs.value
     .filter(t => !t.closedAt)
     .sort((a, b) => (b.lastActivatedAt || b.createdAt) - (a.lastActivatedAt || a.createdAt))
-    .slice(0, 20);
+    .slice(0, 30);
 });
+
+// Helpers
+function getDomain(url: string): string {
+  try {
+    return new URL(url).hostname.replace('www.', '');
+  } catch {
+    return url;
+  }
+}
+
+function formatUTCTime(ts: number): string {
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) + ' UTC';
+}
+
+function formatDuration(ms: number): string {
+  const minutes = Math.floor(ms / 60000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h${minutes % 60}m`;
+}
 
 // API helpers
 async function sendMessage<T>(message: Record<string, unknown>): Promise<T> {
@@ -120,11 +141,6 @@ async function handleSaveTab() {
   }
 }
 
-function handleShare() {
-  // Placeholder for PKM integration
-  alert('PKM integration coming soon!');
-}
-
 async function switchToTab(tab: TrackedTab) {
   try {
     await sendMessage({
@@ -164,221 +180,135 @@ onMounted(() => {
     <!-- Header -->
     <header class="header">
       <div class="header-left">
-        <h1 class="logo">UNOS</h1>
+        <span class="logo">UNOS</span>
         <span class="version">v0.1</span>
       </div>
-      <div class="header-center">
-        <div class="stat-pill">
-          <span class="stat-pill-icon">📊</span>
-          <span class="stat-pill-text">{{ tabCount }} tabs</span>
-        </div>
-        <div class="stat-pill">
-          <span class="stat-pill-icon">🪟</span>
-          <span class="stat-pill-text">{{ windowCount }} windows</span>
-        </div>
-        <div class="stat-pill">
-          <span class="stat-pill-icon">⏱️</span>
-          <span class="stat-pill-text">{{ totalActiveTime }}</span>
-        </div>
+      <div class="header-stats">
+        <span class="stat-pill">{{ tabCount }} tabs</span>
+        <span class="stat-pill">{{ windowCount }} win</span>
+        <span class="stat-pill">{{ totalActiveTime }}</span>
       </div>
       <div class="header-right">
-        <button class="icon-btn" @click="showExportDialog = true" title="Export">
-          📤
-        </button>
-        <button class="icon-btn" @click="handleShare" title="Share to PKM">
-          🔗
-        </button>
+        <button class="header-btn" @click="showExportDialog = true">Export</button>
       </div>
     </header>
 
     <!-- Loading state -->
     <div v-if="loading" class="loading">
       <span class="spinner"></span>
-      <p>Loading your browsing data...</p>
+      <p>Loading...</p>
     </div>
 
     <!-- Error state -->
-    <div v-else-if="error" class="error">
+    <div v-else-if="error" class="error-state">
       <p>{{ error }}</p>
       <button @click="loadData" class="btn btn-sm">Retry</button>
     </div>
 
     <!-- Main content -->
     <main v-else class="main">
-      <div class="content-grid">
-        <!-- Left column: Current tab -->
-        <div class="left-column">
-          <section v-if="currentTab" class="current-tab-card">
-            <div class="card-header">
-              <h3 class="card-title">Current Tab</h3>
-              <div class="card-actions">
-                <button
-                  v-if="!currentTab.isSaved"
-                  class="action-btn save-btn"
-                  @click="handleSaveTab"
-                  title="Save tab"
-                >
-                  💾 Save
-                </button>
-                <span v-else class="saved-badge">✓ Saved</span>
-              </div>
-            </div>
+      <!-- Current tab bar -->
+      <div v-if="currentTab" class="current-tab-bar">
+        <img
+          v-if="currentTab.faviconUrl"
+          :src="currentTab.faviconUrl"
+          class="ctb-favicon"
+          alt=""
+        />
+        <span v-else class="ctb-favicon-placeholder">&#9675;</span>
+        <span class="ctb-title">{{ currentTab.title || 'Untitled' }}</span>
+        <span class="ctb-domain">{{ getDomain(currentTab.url) }}</span>
+        <span class="ctb-time">{{ formatDuration(currentTab.totalActiveTime || 0) }}</span>
+        <span class="ctb-created">{{ formatUTCTime(currentTab.createdAt) }}</span>
+        <span v-if="currentTab.tags && currentTab.tags.length > 0" class="ctb-tags">
+          <span v-for="tag in currentTab.tags.slice(0, 3)" :key="tag" class="ctb-tag">{{ tag }}</span>
+          <span v-if="currentTab.tags.length > 3" class="ctb-tag-overflow">+{{ currentTab.tags.length - 3 }}</span>
+        </span>
+        <button class="ctb-action" @click="showMetadataPanel = !showMetadataPanel" title="Edit tags/notes">+</button>
+        <button
+          v-if="!currentTab.isSaved"
+          class="ctb-action"
+          @click="handleSaveTab"
+          title="Save tab"
+        >Save</button>
+        <span v-else class="ctb-saved">Saved</span>
+      </div>
 
-            <div class="tab-main-info">
-              <img
-                v-if="currentTab.faviconUrl"
-                :src="currentTab.faviconUrl"
-                class="favicon-large"
-                alt=""
-              />
-              <div class="tab-text">
-                <h2 class="tab-title-large">{{ currentTab.title || 'Untitled' }}</h2>
-                <p class="tab-url">{{ currentTab.url }}</p>
-              </div>
-            </div>
+      <!-- Metadata panel overlay -->
+      <div v-if="showMetadataPanel && currentTab" class="metadata-overlay">
+        <MetadataPanel
+          :tab="currentTab"
+          @update="handleMetadataUpdate"
+          @close="showMetadataPanel = false"
+        />
+      </div>
 
-            <div class="stats-grid">
-              <div class="stat-card">
-                <div class="stat-icon">⏱️</div>
-                <div class="stat-content">
-                  <div class="stat-label">Active Time</div>
-                  <div class="stat-value">{{ Math.round((currentTab.totalActiveTime || 0) / 60000) }}m</div>
-                </div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-icon">🕐</div>
-                <div class="stat-content">
-                  <div class="stat-label">Created</div>
-                  <div class="stat-value">{{ new Date(currentTab.createdAt).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) }}</div>
-                </div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-icon">👁️</div>
-                <div class="stat-content">
-                  <div class="stat-label">Last Active</div>
-                  <div class="stat-value">{{ new Date(currentTab.lastActivatedAt || currentTab.createdAt).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) }}</div>
-                </div>
-              </div>
-            </div>
+      <!-- View tabs -->
+      <div class="view-tabs">
+        <button
+          class="view-tab"
+          :class="{ active: activeView === 'recent' }"
+          @click="activeView = 'recent'"
+        >RECENT</button>
+        <button
+          class="view-tab"
+          :class="{ active: activeView === 'windows' }"
+          @click="activeView = 'windows'"
+        >WINDOWS</button>
+        <button
+          class="view-tab"
+          :class="{ active: activeView === 'debug' }"
+          @click="activeView = 'debug'"
+        >DEBUG</button>
+      </div>
 
-            <!-- Tags -->
-            <div class="tags-section">
-              <div class="tags-header">
-                <span class="tags-label">Tags</span>
-                <button class="add-tag-btn" @click="showMetadataPanel = !showMetadataPanel">
-                  {{ showMetadataPanel ? '✕' : '+ Add' }}
-                </button>
-              </div>
-              <div v-if="currentTab.tags && currentTab.tags.length > 0" class="tags">
-                <span v-for="tag in currentTab.tags" :key="tag" class="tag">{{ tag }}</span>
-              </div>
-              <div v-else class="no-tags">No tags yet</div>
-            </div>
-
-            <!-- Notes preview -->
-            <div v-if="currentTab.notes" class="notes-preview">
-              <div class="notes-label">Notes</div>
-              <div class="notes-text">{{ currentTab.notes }}</div>
-            </div>
-          </section>
-
-          <!-- Metadata panel -->
-          <MetadataPanel
-            v-if="showMetadataPanel && currentTab"
-            :tab="currentTab"
-            @update="handleMetadataUpdate"
-            @close="showMetadataPanel = false"
-          />
-        </div>
-
-        <!-- Right column: Tabs with different views -->
-        <div class="right-column">
-          <!-- View tabs -->
-          <div class="view-tabs">
+      <!-- Recent Tabs View -->
+      <section v-if="activeView === 'recent'" class="view-content">
+        <div class="tabs-list">
+          <div
+            v-for="tab in recentTabs"
+            :key="tab.persistentId"
+            class="tab-row"
+            :class="{ 'is-current': currentTab && tab.persistentId === currentTab.persistentId }"
+            @dblclick="switchToTab(tab)"
+            title="Double-click to switch"
+          >
+            <img
+              v-if="tab.faviconUrl"
+              :src="tab.faviconUrl"
+              class="tab-row-favicon"
+              alt=""
+            />
+            <span v-else class="tab-row-favicon-ph">&#9675;</span>
+            <span class="tab-row-title">{{ tab.title || 'Untitled' }}</span>
+            <span class="tab-row-domain">{{ getDomain(tab.url) }}</span>
+            <span class="tab-row-time">{{ formatDuration(tab.totalActiveTime || 0) }}</span>
             <button
-              class="view-tab"
-              :class="{ active: activeView === 'recent' }"
-              @click="activeView = 'recent'"
-            >
-              📊 Recent
-            </button>
-            <button
-              class="view-tab"
-              :class="{ active: activeView === 'windows' }"
-              @click="activeView = 'windows'"
-            >
-              🪟 Windows
-            </button>
-            <button
-              class="view-tab"
-              :class="{ active: activeView === 'debug' }"
-              @click="activeView = 'debug'"
-            >
-              🔧 Debug
-            </button>
+              class="tab-row-close"
+              @click="closeTab(tab, $event)"
+              title="Close tab"
+            >&times;</button>
           </div>
 
-          <!-- Recent Tabs View -->
-          <section v-if="activeView === 'recent'" class="view-content recent-tabs-section">
-            <div class="tabs-list">
-              <div
-                v-for="tab in recentTabs"
-                :key="tab.persistentId"
-                class="tab-item"
-                :class="{ 'is-current': currentTab && tab.persistentId === currentTab.persistentId }"
-                @click="switchToTab(tab)"
-                title="Click to switch to this tab"
-              >
-                <img
-                  v-if="tab.faviconUrl"
-                  :src="tab.faviconUrl"
-                  class="tab-item-favicon"
-                  alt=""
-                />
-                <div class="tab-item-favicon-placeholder" v-else>
-                  🌐
-                </div>
-                <div class="tab-item-info">
-                  <div class="tab-item-title">{{ tab.title || 'Untitled' }}</div>
-                  <div class="tab-item-meta">
-                    <span class="tab-item-time">{{ Math.round((tab.totalActiveTime || 0) / 60000) }}m</span>
-                    <span v-if="tab.isSaved" class="tab-item-saved">💾</span>
-                    <span v-if="tab.tags && tab.tags.length > 0" class="tab-item-tags">
-                      🏷️ {{ tab.tags.length }}
-                    </span>
-                  </div>
-                </div>
-                <button
-                  class="tab-item-close"
-                  @click="closeTab(tab, $event)"
-                  title="Close tab"
-                >
-                  ×
-                </button>
-              </div>
-
-              <div v-if="recentTabs.length === 0" class="empty-state">
-                <div class="empty-icon">📭</div>
-                <div class="empty-text">No tabs tracked yet</div>
-              </div>
-            </div>
-          </section>
-
-          <!-- All Windows View -->
-          <AllWindowsView
-            v-else-if="activeView === 'windows'"
-            :windows="windows"
-            :tabs="tabs"
-            class="view-content"
-          />
-
-          <!-- Debug Panel -->
-          <DebugPanel
-            v-else-if="activeView === 'debug'"
-            class="view-content"
-          />
+          <div v-if="recentTabs.length === 0" class="empty-state">
+            No tabs tracked yet
+          </div>
         </div>
-      </div>
+      </section>
+
+      <!-- All Windows View -->
+      <AllWindowsView
+        v-else-if="activeView === 'windows'"
+        :windows="windows"
+        :tabs="tabs"
+        class="view-content"
+      />
+
+      <!-- Debug Panel -->
+      <DebugPanel
+        v-else-if="activeView === 'debug'"
+        class="view-content"
+      />
     </main>
 
     <!-- Export dialog -->
@@ -402,109 +332,115 @@ onMounted(() => {
   height: 700px;
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: linear-gradient(135deg, #0f0f1e 0%, #1a1a2e 50%, #16213e 100%);
-  color: #eee;
+  background: var(--bg-page);
+  color: var(--text-primary);
   display: flex;
   flex-direction: column;
+
+  /* Theme: Off-white + Green/Amber */
+  --bg-page: #FAFAF5;
+  --bg-card: #F5F5F0;
+  --bg-alt: #EEEDE8;
+  --bg-header: #1C2618;
+  --bg-overlay: rgba(0, 0, 0, 0.5);
+
+  --text-primary: #2D2D2D;
+  --text-secondary: #6B7280;
+  --text-muted: #9CA3AF;
+  --text-inverse: #F5F5F0;
+
+  --accent-green: #059669;
+  --accent-amber: #D97706;
+  --accent-red: #DC2626;
+
+  --border-light: #D1D5DB;
+  --border-warm: #C9C5B8;
+
+  --font-mono: 'Monaco', 'Menlo', 'Consolas', monospace;
 }
 
-/* Header */
+/* ── Header ── */
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px;
-  background: rgba(26, 26, 46, 0.8);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid rgba(99, 102, 241, 0.2);
-  position: sticky;
-  top: 0;
-  z-index: 10;
+  padding: 0 16px;
+  height: 44px;
+  background: var(--bg-header);
+  color: var(--text-inverse);
+  flex-shrink: 0;
 }
 
 .header-left {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 8px;
 }
 
 .logo {
-  font-size: 24px;
+  font-size: 16px;
   font-weight: 700;
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  letter-spacing: 1px;
+  color: var(--text-inverse);
 }
 
 .version {
-  font-size: 11px;
-  color: #666;
+  font-size: 10px;
+  color: var(--text-muted);
   font-weight: 500;
 }
 
-.header-center {
+.header-stats {
   display: flex;
-  gap: 12px;
+  gap: 10px;
 }
 
 .stat-pill {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(42, 42, 74, 0.6);
-  padding: 6px 12px;
-  border-radius: 20px;
-  border: 1px solid rgba(99, 102, 241, 0.2);
-}
-
-.stat-pill-icon {
-  font-size: 14px;
-}
-
-.stat-pill-text {
-  font-size: 12px;
-  font-weight: 500;
-  color: #ddd;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: rgba(245, 245, 240, 0.8);
+  background: rgba(255, 255, 255, 0.1);
+  padding: 3px 10px;
+  border-radius: 10px;
 }
 
 .header-right {
   display: flex;
-  gap: 8px;
+  gap: 6px;
 }
 
-.icon-btn {
-  background: rgba(99, 102, 241, 0.2);
-  border: 1px solid rgba(99, 102, 241, 0.3);
-  padding: 8px 12px;
-  border-radius: 8px;
+.header-btn {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  padding: 4px 12px;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 16px;
-  transition: all 0.2s;
+  font-size: 11px;
+  color: var(--text-inverse);
+  transition: background 0.15s;
 }
 
-.icon-btn:hover {
-  background: rgba(99, 102, 241, 0.4);
-  transform: translateY(-1px);
+.header-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
 }
 
-/* Loading & Error */
-.loading, .error {
+/* ── Loading & Error ── */
+.loading, .error-state {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   padding: 60px 20px;
-  gap: 16px;
-  color: #888;
+  gap: 12px;
+  color: var(--text-muted);
   flex: 1;
 }
 
 .spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid rgba(99, 102, 241, 0.2);
-  border-top-color: #6366f1;
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--border-light);
+  border-top-color: var(--accent-green);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -513,304 +449,173 @@ onMounted(() => {
   to { transform: rotate(360deg); }
 }
 
-.error {
-  color: #ef4444;
+.error-state {
+  color: var(--accent-red);
 }
 
-/* Main content */
+/* ── Main ── */
 .main {
   flex: 1;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
-.content-grid {
-  display: grid;
-  grid-template-columns: 1.2fr 1fr;
-  gap: 16px;
-  padding: 16px 20px;
-  height: 100%;
-  overflow: hidden;
-}
-
-.left-column, .right-column {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-
-/* Scrollbar styling */
-.left-column::-webkit-scrollbar, .right-column::-webkit-scrollbar {
-  width: 6px;
-}
-
-.left-column::-webkit-scrollbar-track, .right-column::-webkit-scrollbar-track {
-  background: rgba(42, 42, 74, 0.3);
-  border-radius: 3px;
-}
-
-.left-column::-webkit-scrollbar-thumb, .right-column::-webkit-scrollbar-thumb {
-  background: rgba(99, 102, 241, 0.5);
-  border-radius: 3px;
-}
-
-.left-column::-webkit-scrollbar-thumb:hover, .right-column::-webkit-scrollbar-thumb:hover {
-  background: rgba(99, 102, 241, 0.7);
-}
-
-/* Current tab card */
-.current-tab-card {
-  background: rgba(42, 42, 74, 0.6);
-  border: 1px solid rgba(99, 102, 241, 0.2);
-  border-radius: 16px;
-  padding: 20px;
-  backdrop-filter: blur(10px);
-}
-
-.card-header {
+/* ── Current Tab Bar ── */
+.current-tab-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-}
-
-.card-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #888;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.card-actions {
-  display: flex;
   gap: 8px;
-}
-
-.action-btn {
-  background: rgba(99, 102, 241, 0.2);
-  border: 1px solid rgba(99, 102, 241, 0.3);
-  padding: 6px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 12px;
-  color: #ddd;
-  transition: all 0.2s;
-  font-weight: 500;
-}
-
-.action-btn:hover {
-  background: rgba(99, 102, 241, 0.4);
-  transform: translateY(-1px);
-}
-
-.save-btn {
-  background: rgba(34, 197, 94, 0.2);
-  border-color: rgba(34, 197, 94, 0.3);
-}
-
-.save-btn:hover {
-  background: rgba(34, 197, 94, 0.4);
-}
-
-.saved-badge {
-  background: rgba(34, 197, 94, 0.2);
-  border: 1px solid rgba(34, 197, 94, 0.3);
-  padding: 6px 12px;
-  border-radius: 8px;
-  font-size: 12px;
-  color: #4ade80;
-  font-weight: 500;
-}
-
-.tab-main-info {
-  display: flex;
-  gap: 16px;
-  margin-bottom: 20px;
-  align-items: flex-start;
-}
-
-.favicon-large {
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
-  background: rgba(58, 58, 90, 0.6);
+  height: 44px;
+  padding: 0 12px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border-warm);
   flex-shrink: 0;
-  border: 1px solid rgba(99, 102, 241, 0.2);
-}
-
-.tab-text {
-  flex: 1;
   overflow: hidden;
 }
 
-.tab-title-large {
-  font-size: 16px;
-  font-weight: 600;
-  margin-bottom: 8px;
-  color: #fff;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+.ctb-favicon {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  flex-shrink: 0;
 }
 
-.tab-url {
+.ctb-favicon-placeholder {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.ctb-title {
   font-size: 12px;
-  color: #888;
+  font-weight: 600;
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 180px;
+  flex-shrink: 1;
 }
 
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  margin-bottom: 20px;
-}
-
-.stat-card {
-  background: rgba(58, 58, 90, 0.4);
-  border: 1px solid rgba(99, 102, 241, 0.15);
-  border-radius: 12px;
-  padding: 12px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.stat-icon {
-  font-size: 20px;
-}
-
-.stat-content {
-  flex: 1;
-}
-
-.stat-label {
-  font-size: 10px;
-  color: #888;
-  text-transform: uppercase;
-  margin-bottom: 4px;
-}
-
-.stat-value {
-  font-size: 14px;
-  font-weight: 600;
-  color: #fff;
-}
-
-.tags-section {
-  margin-bottom: 16px;
-}
-
-.tags-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-
-.tags-label {
+.ctb-domain {
   font-size: 11px;
-  font-weight: 600;
-  color: #888;
-  text-transform: uppercase;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-.add-tag-btn {
-  background: rgba(99, 102, 241, 0.2);
-  border: 1px solid rgba(99, 102, 241, 0.3);
-  padding: 4px 10px;
-  border-radius: 6px;
+.ctb-time {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--accent-amber);
+  flex-shrink: 0;
+}
+
+.ctb-created {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.ctb-tags {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.ctb-tag {
+  font-size: 10px;
+  background: rgba(5, 150, 105, 0.12);
+  color: var(--accent-green);
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid rgba(5, 150, 105, 0.25);
+}
+
+.ctb-tag-overflow {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.ctb-action {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-light);
+  padding: 2px 8px;
+  border-radius: 4px;
   cursor: pointer;
   font-size: 11px;
-  color: #ddd;
-  transition: all 0.2s;
+  color: var(--text-secondary);
+  transition: all 0.15s;
+  flex-shrink: 0;
 }
 
-.add-tag-btn:hover {
-  background: rgba(99, 102, 241, 0.4);
-}
-
-.tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.tag {
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+.ctb-action:hover {
+  background: var(--accent-green);
   color: #fff;
-  padding: 4px 10px;
-  border-radius: 12px;
-  font-size: 11px;
-  font-weight: 500;
+  border-color: var(--accent-green);
 }
 
-.no-tags {
-  font-size: 12px;
-  color: #666;
-  font-style: italic;
-}
-
-.notes-preview {
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid rgba(99, 102, 241, 0.15);
-}
-
-.notes-label {
-  font-size: 11px;
+.ctb-saved {
+  font-size: 10px;
+  color: var(--accent-green);
   font-weight: 600;
-  color: #888;
-  text-transform: uppercase;
-  margin-bottom: 8px;
+  flex-shrink: 0;
 }
 
-.notes-text {
-  font-size: 12px;
-  color: #bbb;
-  line-height: 1.5;
-  max-height: 60px;
-  overflow-y: auto;
+/* ── Metadata Overlay ── */
+.metadata-overlay {
+  position: absolute;
+  top: 44px;
+  right: 12px;
+  width: 280px;
+  z-index: 20;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  overflow: hidden;
 }
 
-/* View tabs */
+/* ── View Tabs ── */
 .view-tabs {
   display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
+  height: 36px;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--bg-card);
+  flex-shrink: 0;
 }
 
 .view-tab {
   flex: 1;
-  background: rgba(42, 42, 74, 0.4);
-  border: 1px solid rgba(99, 102, 241, 0.2);
-  padding: 8px 12px;
-  border-radius: 8px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0 12px;
   cursor: pointer;
-  font-size: 12px;
-  color: #888;
-  transition: all 0.2s;
-  font-weight: 500;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  transition: all 0.15s;
 }
 
 .view-tab:hover {
-  background: rgba(58, 58, 90, 0.6);
-  color: #ddd;
+  color: var(--text-secondary);
+  background: var(--bg-alt);
 }
 
 .view-tab.active {
-  background: rgba(99, 102, 241, 0.3);
-  border-color: rgba(99, 102, 241, 0.5);
-  color: #fff;
+  color: var(--accent-green);
+  border-bottom-color: var(--accent-green);
 }
 
+/* ── View Content ── */
 .view-content {
   flex: 1;
   overflow: hidden;
@@ -818,172 +623,158 @@ onMounted(() => {
   flex-direction: column;
 }
 
-/* Recent tabs section */
-.recent-tabs-section {
-  background: rgba(42, 42, 74, 0.6);
-  border: 1px solid rgba(99, 102, 241, 0.2);
-  border-radius: 16px;
-  padding: 20px;
-  backdrop-filter: blur(10px);
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  overflow: hidden;
-}
-
-.section-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #888;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 16px;
-}
-
+/* ── Recent Tab Rows ── */
 .tabs-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
   overflow-y: auto;
   flex: 1;
 }
 
-.tab-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px;
-  background: rgba(58, 58, 90, 0.4);
-  border: 1px solid rgba(99, 102, 241, 0.15);
-  border-radius: 10px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.tab-item:hover {
-  background: rgba(58, 58, 90, 0.6);
-  border-color: rgba(99, 102, 241, 0.3);
-  transform: translateX(4px);
-}
-
-.tab-item.is-current {
-  background: rgba(99, 102, 241, 0.2);
-  border-color: rgba(99, 102, 241, 0.4);
-}
-
-.tab-item-favicon {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  background: rgba(58, 58, 90, 0.6);
-  flex-shrink: 0;
-}
-
-.tab-item-favicon-placeholder {
-  width: 24px;
-  height: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  flex-shrink: 0;
-}
-
-.tab-item-info {
-  flex: 1;
-  overflow: hidden;
-}
-
-.tab-item-title {
-  font-size: 12px;
-  font-weight: 500;
-  color: #ddd;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-bottom: 4px;
-}
-
-.tab-item-meta {
+.tab-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
-  color: #888;
+  height: 26px;
+  min-height: 26px;
+  padding: 0 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-bottom: 1px solid transparent;
 }
 
-.tab-item-time {
-  color: #888;
+.tab-row:hover {
+  background: var(--bg-alt);
 }
 
-.tab-item-saved, .tab-item-tags {
+.tab-row.is-current {
+  background: rgba(5, 150, 105, 0.06);
+  border-left: 2px solid var(--accent-green);
+}
+
+.tab-row-favicon {
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.tab-row-favicon-ph {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
 }
 
-.tab-item-close {
+.tab-row-title {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.tab-row-domain {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+.tab-row-time {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--accent-amber);
+  flex-shrink: 0;
+  min-width: 28px;
+  text-align: right;
+}
+
+.tab-row-close {
   opacity: 0;
-  background: rgba(239, 68, 68, 0.2);
+  background: none;
   border: none;
-  color: #ef4444;
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
+  color: var(--text-muted);
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.15s;
+  transition: all 0.1s;
   flex-shrink: 0;
 }
 
-.tab-item:hover .tab-item-close {
+.tab-row:hover .tab-row-close {
   opacity: 1;
 }
 
-.tab-item-close:hover {
-  background: rgba(239, 68, 68, 0.4);
+.tab-row-close:hover {
+  background: rgba(220, 38, 38, 0.1);
+  color: var(--accent-red);
 }
 
 .empty-state {
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
   padding: 40px 20px;
-  gap: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
-.empty-icon {
-  font-size: 48px;
-  opacity: 0.5;
-}
-
-.empty-text {
-  font-size: 13px;
-  color: #666;
-}
-
-/* Button styles */
+/* ── Buttons ── */
 .btn {
   padding: 8px 16px;
-  border: none;
-  border-radius: 8px;
-  background: rgba(42, 42, 74, 0.8);
-  color: #eee;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  background: var(--bg-card);
+  color: var(--text-primary);
   cursor: pointer;
-  font-size: 13px;
-  transition: all 0.2s;
+  font-size: 12px;
+  transition: all 0.15s;
 }
 
 .btn:hover {
-  background: rgba(58, 58, 90, 0.8);
-  transform: translateY(-1px);
+  background: var(--bg-alt);
 }
 
 .btn-sm {
-  padding: 6px 12px;
-  font-size: 12px;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+/* ── Scrollbar ── */
+.tabs-list::-webkit-scrollbar,
+.view-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tabs-list::-webkit-scrollbar-track,
+.view-content::-webkit-scrollbar-track {
+  background: var(--bg-alt);
+}
+
+.tabs-list::-webkit-scrollbar-thumb,
+.view-content::-webkit-scrollbar-thumb {
+  background: var(--border-warm);
+  border-radius: 3px;
+}
+
+.tabs-list::-webkit-scrollbar-thumb:hover,
+.view-content::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
 }
 </style>

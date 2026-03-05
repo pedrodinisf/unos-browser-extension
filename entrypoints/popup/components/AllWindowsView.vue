@@ -266,10 +266,10 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
           @click="showCompact = !showCompact"
           title="Toggle compact view"
         >
-          {{ showCompact ? '▤' : '▦' }}
+          {{ showCompact ? '&#9636;' : '&#9638;' }}
         </button>
         <button class="tool-btn" @click="expandAll" title="Expand all">+</button>
-        <button class="tool-btn" @click="collapseAll" title="Collapse all">−</button>
+        <button class="tool-btn" @click="collapseAll" title="Collapse all">&minus;</button>
       </div>
     </div>
 
@@ -308,12 +308,12 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
       >
         <!-- Window header -->
         <div class="window-header" @click="toggleWindow(win.persistentId)">
-          <span class="collapse-icon">{{ collapsedWindows.has(win.persistentId) ? '▶' : '▼' }}</span>
+          <span class="collapse-icon">{{ collapsedWindows.has(win.persistentId) ? '&#9654;' : '&#9660;' }}</span>
           <span class="window-id">W{{ win.chromeWindowId }}</span>
           <span class="window-count">{{ getWindowTabCount(win.persistentId) }} tabs</span>
-          <span v-if="win.incognito" class="incognito-badge">🕶</span>
+          <span v-if="win.incognito" class="incognito-badge">incog</span>
           <div class="window-actions">
-            <button class="window-btn" @click.stop="focusWindow(win)" title="Focus window">↗</button>
+            <button class="window-btn" @click.stop="focusWindow(win)" title="Focus window">&#8599;</button>
           </div>
         </div>
 
@@ -331,7 +331,7 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
             draggable="true"
             @dragstart="onDragStart($event, tab)"
             @dragend="onDragEnd"
-            @click="switchToTab(tab)"
+            @dblclick="switchToTab(tab)"
           >
             <span class="tab-idx">{{ tab.index + 1 }}</span>
             <img
@@ -340,15 +340,15 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
               class="tab-icon"
               alt=""
             />
-            <span v-else class="tab-icon-placeholder">○</span>
+            <span v-else class="tab-icon-placeholder">&#9675;</span>
             <span class="tab-title" :title="tab.title || ''">
               {{ tab.title || 'Untitled' }}
             </span>
             <span v-if="!showCompact" class="tab-domain">{{ getDomain(tab.url) }}</span>
             <span class="tab-time">{{ formatTime(tab.totalActiveTime || 0) }}</span>
-            <span v-if="tab.isSaved" class="tab-badge saved">★</span>
+            <span v-if="tab.isSaved" class="tab-badge saved">&#9733;</span>
             <span v-if="tab.tags?.length" class="tab-badge tags">{{ tab.tags.length }}</span>
-            <button class="tab-close" @click="closeTab(tab, $event)" title="Close">×</button>
+            <button class="tab-close" @click="closeTab(tab, $event)" title="Close">&times;</button>
           </div>
 
           <div v-if="getTabsForWindow(win.persistentId).length === 0" class="empty-tabs">
@@ -369,9 +369,8 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: rgba(42, 42, 74, 0.6);
-  border: 1px solid rgba(99, 102, 241, 0.2);
-  border-radius: 12px;
+  background: var(--bg-card);
+  border-top: 1px solid var(--border-light);
   overflow: hidden;
 }
 
@@ -379,8 +378,8 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid rgba(99, 102, 241, 0.15);
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-light);
   gap: 8px;
 }
 
@@ -390,21 +389,21 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 
 .search-input {
   width: 100%;
-  background: rgba(30, 30, 50, 0.8);
-  border: 1px solid rgba(99, 102, 241, 0.2);
-  border-radius: 6px;
-  padding: 6px 10px;
+  background: var(--bg-page);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  padding: 4px 8px;
   font-size: 12px;
-  color: #ddd;
+  color: var(--text-primary);
   outline: none;
 }
 
 .search-input:focus {
-  border-color: rgba(99, 102, 241, 0.5);
+  border-color: var(--accent-green);
 }
 
 .search-input::placeholder {
-  color: #666;
+  color: var(--text-muted);
 }
 
 .toolbar-right {
@@ -413,55 +412,61 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 }
 
 .tool-btn {
-  background: rgba(58, 58, 90, 0.4);
-  border: 1px solid rgba(99, 102, 241, 0.2);
-  color: #888;
-  padding: 4px 8px;
-  border-radius: 4px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  padding: 3px 8px;
+  border-radius: 3px;
   cursor: pointer;
   font-size: 12px;
   transition: all 0.15s;
 }
 
-.tool-btn:hover, .tool-btn.active {
-  background: rgba(99, 102, 241, 0.3);
-  color: #ddd;
+.tool-btn:hover {
+  background: var(--bg-page);
+  color: var(--text-primary);
+}
+
+.tool-btn.active {
+  background: var(--accent-green);
+  color: #fff;
+  border-color: var(--accent-green);
 }
 
 .sort-bar {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 12px;
-  border-bottom: 1px solid rgba(99, 102, 241, 0.1);
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border-light);
   flex-wrap: wrap;
 }
 
 .sort-label {
   font-size: 10px;
-  color: #666;
+  color: var(--text-muted);
   text-transform: uppercase;
 }
 
 .sort-btn {
   background: none;
   border: none;
-  color: #888;
+  color: var(--text-muted);
   font-size: 10px;
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: 3px;
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .sort-btn:hover {
-  color: #ddd;
-  background: rgba(99, 102, 241, 0.2);
+  color: var(--text-primary);
+  background: var(--bg-alt);
 }
 
 .sort-btn.active {
-  color: #6366f1;
-  background: rgba(99, 102, 241, 0.15);
+  color: var(--accent-green);
+  background: rgba(5, 150, 105, 0.08);
 }
 
 .sort-dir {
@@ -472,10 +477,10 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 .stats-row {
   display: flex;
   gap: 12px;
-  padding: 4px 12px;
+  padding: 3px 12px;
   font-size: 10px;
-  color: #666;
-  border-bottom: 1px solid rgba(99, 102, 241, 0.1);
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-light);
 }
 
 .windows-container {
@@ -485,50 +490,53 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 }
 
 .window-section {
-  border-bottom: 1px solid rgba(99, 102, 241, 0.1);
+  border-bottom: 1px solid var(--border-light);
 }
 
 .window-section.drag-over {
-  background: rgba(99, 102, 241, 0.1);
+  background: rgba(5, 150, 105, 0.06);
 }
 
 .window-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
-  background: rgba(58, 58, 90, 0.3);
+  padding: 6px 12px;
+  background: var(--bg-alt);
   cursor: pointer;
   user-select: none;
   transition: background 0.15s;
 }
 
 .window-header:hover {
-  background: rgba(58, 58, 90, 0.5);
+  background: var(--border-warm);
 }
 
 .collapse-icon {
-  font-size: 10px;
-  color: #666;
+  font-size: 8px;
+  color: var(--text-muted);
   width: 12px;
 }
 
 .window-id {
   font-size: 11px;
   font-weight: 600;
-  color: #6366f1;
+  color: var(--accent-green);
+  font-family: var(--font-mono);
 }
 
 .window-count {
   font-size: 10px;
-  color: #888;
-  background: rgba(99, 102, 241, 0.15);
+  color: var(--text-secondary);
+  background: var(--bg-page);
   padding: 1px 6px;
   border-radius: 8px;
 }
 
 .incognito-badge {
-  font-size: 12px;
+  font-size: 9px;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .window-actions {
@@ -538,19 +546,20 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 }
 
 .window-btn {
-  background: rgba(99, 102, 241, 0.2);
-  border: none;
-  color: #888;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  color: var(--text-secondary);
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: 3px;
   cursor: pointer;
   font-size: 11px;
   transition: all 0.15s;
 }
 
 .window-btn:hover {
-  background: rgba(99, 102, 241, 0.4);
-  color: #ddd;
+  background: var(--accent-green);
+  color: #fff;
+  border-color: var(--accent-green);
 }
 
 .tabs-container {
@@ -565,11 +574,11 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
   padding: 4px 12px 4px 24px;
   cursor: pointer;
   transition: background 0.1s;
-  min-height: 28px;
+  min-height: 26px;
 }
 
 .tab-row:hover {
-  background: rgba(99, 102, 241, 0.1);
+  background: var(--bg-alt);
 }
 
 .tab-row.dragging {
@@ -578,10 +587,11 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 
 .tab-idx {
   font-size: 9px;
-  color: #555;
+  color: var(--text-muted);
   width: 18px;
   text-align: right;
   flex-shrink: 0;
+  font-family: var(--font-mono);
 }
 
 .tab-icon {
@@ -595,7 +605,7 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
   width: 14px;
   height: 14px;
   font-size: 10px;
-  color: #555;
+  color: var(--text-muted);
   text-align: center;
   flex-shrink: 0;
 }
@@ -603,7 +613,7 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 .tab-title {
   flex: 1;
   font-size: 11px;
-  color: #ccc;
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -612,7 +622,7 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 
 .tab-domain {
   font-size: 9px;
-  color: #666;
+  color: var(--text-muted);
   white-space: nowrap;
   max-width: 80px;
   overflow: hidden;
@@ -622,7 +632,8 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 
 .tab-time {
   font-size: 9px;
-  color: #666;
+  font-family: var(--font-mono);
+  color: var(--accent-amber);
   flex-shrink: 0;
   width: 32px;
   text-align: right;
@@ -636,19 +647,19 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 }
 
 .tab-badge.saved {
-  color: #fbbf24;
+  color: var(--accent-amber);
 }
 
 .tab-badge.tags {
-  background: rgba(99, 102, 241, 0.2);
-  color: #6366f1;
+  background: rgba(5, 150, 105, 0.1);
+  color: var(--accent-green);
 }
 
 .tab-close {
   opacity: 0;
   background: none;
   border: none;
-  color: #888;
+  color: var(--text-muted);
   font-size: 14px;
   padding: 0 4px;
   cursor: pointer;
@@ -661,7 +672,7 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 }
 
 .tab-close:hover {
-  color: #ef4444;
+  color: var(--accent-red);
 }
 
 .tabs-container.compact .tab-row {
@@ -681,7 +692,7 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 .empty-tabs {
   padding: 12px 24px;
   font-size: 11px;
-  color: #666;
+  color: var(--text-muted);
   font-style: italic;
 }
 
@@ -690,7 +701,7 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #666;
+  color: var(--text-muted);
   font-size: 13px;
 }
 
@@ -700,15 +711,15 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 }
 
 .windows-container::-webkit-scrollbar-track {
-  background: rgba(42, 42, 74, 0.3);
+  background: var(--bg-alt);
 }
 
 .windows-container::-webkit-scrollbar-thumb {
-  background: rgba(99, 102, 241, 0.4);
+  background: var(--border-warm);
   border-radius: 3px;
 }
 
 .windows-container::-webkit-scrollbar-thumb:hover {
-  background: rgba(99, 102, 241, 0.6);
+  background: var(--text-muted);
 }
 </style>

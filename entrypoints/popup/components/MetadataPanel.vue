@@ -84,7 +84,7 @@ function handleSave() {
           v-model="notes"
           class="textarea"
           placeholder="Add notes..."
-          rows="3"
+          rows="2"
         ></textarea>
       </div>
     </div>
@@ -98,9 +98,9 @@ function handleSave() {
 
 <style scoped>
 .metadata-panel {
-  background: #1e1e38;
-  border-radius: 12px;
-  border: 1px solid #3a3a5a;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
   overflow: hidden;
 }
 
@@ -108,59 +108,62 @@ function handleSave() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid #2a2a4a;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .panel-header h3 {
-  font-size: 14px;
-  font-weight: 500;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 .close-btn {
   background: none;
   border: none;
-  color: #888;
-  font-size: 20px;
+  color: var(--text-muted);
+  font-size: 18px;
   cursor: pointer;
   line-height: 1;
 }
 
 .close-btn:hover {
-  color: #fff;
+  color: var(--text-primary);
 }
 
 .panel-content {
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.field {
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .field-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: #888;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
   text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .tags-input {
-  background: #2a2a4a;
-  border-radius: 8px;
-  padding: 8px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  padding: 6px;
 }
 
 .tags-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
+  gap: 4px;
+  margin-bottom: 6px;
 }
 
 .tags-list:empty {
@@ -175,9 +178,9 @@ function handleSave() {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: #6366f1;
+  background: var(--accent-green);
   color: #fff;
-  padding: 2px 8px;
+  padding: 1px 8px;
   border-radius: 10px;
   font-size: 11px;
 }
@@ -186,7 +189,7 @@ function handleSave() {
   background: none;
   border: none;
   color: rgba(255, 255, 255, 0.7);
-  font-size: 14px;
+  font-size: 13px;
   cursor: pointer;
   line-height: 1;
   padding: 0;
@@ -201,56 +204,59 @@ function handleSave() {
   width: 100%;
   background: transparent;
   border: none;
-  color: #eee;
-  font-size: 13px;
+  color: var(--text-primary);
+  font-size: 12px;
   font-family: inherit;
   outline: none;
 }
 
 .input::placeholder, .textarea::placeholder {
-  color: #666;
+  color: var(--text-muted);
 }
 
 .textarea {
-  background: #2a2a4a;
-  border-radius: 8px;
-  padding: 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  padding: 6px;
   resize: vertical;
-  min-height: 60px;
+  min-height: 36px;
+  font-size: 11px;
 }
 
 .panel-footer {
   display: flex;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid #2a2a4a;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border-light);
 }
 
 .btn {
   flex: 1;
-  padding: 10px 16px;
+  padding: 5px 10px;
   border: none;
-  border-radius: 8px;
-  font-size: 13px;
+  border-radius: 4px;
+  font-size: 11px;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background 0.15s;
 }
 
 .btn-cancel {
-  background: #2a2a4a;
-  color: #eee;
+  background: var(--bg-alt);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
 }
 
 .btn-cancel:hover {
-  background: #3a3a5a;
+  background: var(--border-warm);
 }
 
 .btn-save {
-  background: #6366f1;
+  background: var(--accent-green);
   color: #fff;
 }
 
 .btn-save:hover {
-  background: #5254cc;
+  background: #047857;
 }
 </style>

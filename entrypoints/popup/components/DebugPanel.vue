@@ -71,9 +71,9 @@ async function testServiceWorker() {
   logs.value.push('Testing service worker...');
   try {
     const response = await sendMessage({ type: 'PING' });
-    logs.value.push('✓ Service worker responded: ' + JSON.stringify(response));
+    logs.value.push('OK Service worker responded: ' + JSON.stringify(response));
   } catch (err) {
-    logs.value.push('✗ Service worker error: ' + (err instanceof Error ? err.message : String(err)));
+    logs.value.push('ERR Service worker error: ' + (err instanceof Error ? err.message : String(err)));
   }
   await loadDebugInfo();
 }
@@ -82,9 +82,9 @@ async function forceReconcile() {
   logs.value.push('Forcing reconciliation...');
   try {
     const response = await sendMessage({ type: 'FORCE_RECONCILE' });
-    logs.value.push('✓ Reconciliation complete: ' + JSON.stringify(response));
+    logs.value.push('OK Reconciliation complete: ' + JSON.stringify(response));
   } catch (err) {
-    logs.value.push('✗ Reconciliation error: ' + (err instanceof Error ? err.message : String(err)));
+    logs.value.push('ERR Reconciliation error: ' + (err instanceof Error ? err.message : String(err)));
   }
   await loadDebugInfo();
 }
@@ -93,9 +93,9 @@ async function forceInit() {
   logs.value.push('Forcing initialization...');
   try {
     const response = await sendMessage({ type: 'FORCE_INIT' });
-    logs.value.push('✓ Initialization complete: ' + JSON.stringify(response));
+    logs.value.push('OK Initialization complete: ' + JSON.stringify(response));
   } catch (err) {
-    logs.value.push('✗ Initialization error: ' + (err instanceof Error ? err.message : String(err)));
+    logs.value.push('ERR Initialization error: ' + (err instanceof Error ? err.message : String(err)));
   }
   await loadDebugInfo();
 }
@@ -108,7 +108,7 @@ onMounted(() => {
 <template>
   <div class="debug-panel">
     <div class="debug-header">
-      <h2>🔧 Debug Panel</h2>
+      <h2>Debug Panel</h2>
       <div class="debug-actions">
         <button class="debug-btn" @click="loadDebugInfo">Refresh</button>
         <button class="debug-btn" @click="copyDebugInfo" v-if="debugInfo">Copy JSON</button>
@@ -130,7 +130,7 @@ onMounted(() => {
           <div class="debug-row">
             <span class="debug-label">Initialized:</span>
             <span class="debug-value" :class="{ 'status-success': debugInfo.stats?.initialized, 'status-error': !debugInfo.stats?.initialized }">
-              {{ debugInfo.stats?.initialized ? '✓ Yes' : '✗ No' }}
+              {{ debugInfo.stats?.initialized ? 'Yes' : 'No' }}
             </span>
           </div>
           <div class="debug-row">
@@ -208,11 +208,11 @@ onMounted(() => {
 
       <!-- Instructions -->
       <div class="debug-section">
-        <h3>📋 How to Debug</h3>
+        <h3>How to Debug</h3>
         <ol class="debug-instructions">
           <li>Click "Copy Console Cmd" and paste in Service Worker console</li>
           <li>Go to <code>chrome://extensions/</code></li>
-          <li>Find UNOS → Click "service worker" (or "Inspect views")</li>
+          <li>Find UNOS - Click "service worker" (or "Inspect views")</li>
           <li>Look for console logs starting with <code>[UNOS]</code></li>
           <li>Open/close tabs and watch for tracking events</li>
           <li>Copy any errors and share them</li>
@@ -224,175 +224,183 @@ onMounted(() => {
 
 <style scoped>
 .debug-panel {
-  padding: 20px;
-  max-width: 800px;
-  margin: 0 auto;
+  padding: 16px;
+  overflow-y: auto;
+  height: 100%;
 }
 
 .debug-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 24px;
+  margin-bottom: 16px;
 }
 
 .debug-header h2 {
-  font-size: 18px;
+  font-size: 14px;
   font-weight: 600;
+  color: var(--text-primary);
 }
 
 .debug-actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
 }
 
 .debug-btn {
-  background: rgba(99, 102, 241, 0.2);
-  border: 1px solid rgba(99, 102, 241, 0.3);
-  padding: 6px 12px;
-  border-radius: 6px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border-light);
+  padding: 4px 10px;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 12px;
-  color: #ddd;
-  transition: all 0.2s;
+  font-size: 11px;
+  color: var(--text-secondary);
+  transition: all 0.15s;
 }
 
 .debug-btn:hover {
-  background: rgba(99, 102, 241, 0.4);
+  background: var(--accent-green);
+  color: #fff;
+  border-color: var(--accent-green);
 }
 
 .debug-btn-sm {
-  background: rgba(99, 102, 241, 0.15);
-  border: 1px solid rgba(99, 102, 241, 0.25);
-  padding: 4px 10px;
-  border-radius: 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  padding: 3px 8px;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 11px;
-  color: #ddd;
-  transition: all 0.2s;
+  font-size: 10px;
+  color: var(--text-secondary);
+  transition: all 0.15s;
 }
 
 .debug-btn-sm:hover {
-  background: rgba(99, 102, 241, 0.3);
+  background: var(--accent-green);
+  color: #fff;
+  border-color: var(--accent-green);
 }
 
 .debug-buttons {
   display: flex;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 .debug-loading,
 .debug-error {
   padding: 40px;
   text-align: center;
-  color: #888;
+  color: var(--text-muted);
 }
 
 .debug-error {
-  color: #ef4444;
+  color: var(--accent-red);
 }
 
 .debug-content {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 12px;
 }
 
 .debug-section {
-  background: rgba(42, 42, 74, 0.4);
-  border: 1px solid rgba(99, 102, 241, 0.2);
-  border-radius: 12px;
-  padding: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  padding: 12px;
 }
 
 .debug-section h3 {
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
-  color: #888;
+  color: var(--text-secondary);
   text-transform: uppercase;
-  margin-bottom: 12px;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
 }
 
 .debug-info {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .debug-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .debug-label {
-  color: #888;
-  min-width: 120px;
+  color: var(--text-muted);
+  min-width: 110px;
 }
 
 .debug-value {
-  color: #ddd;
+  color: var(--text-primary);
   font-weight: 500;
 }
 
 .mono {
-  font-family: 'Monaco', 'Menlo', monospace;
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 10px;
   word-break: break-all;
 }
 
 .debug-events {
-  max-height: 200px;
+  max-height: 180px;
   overflow-y: auto;
 }
 
 .debug-event {
   display: flex;
-  gap: 12px;
-  padding: 6px 0;
-  font-size: 12px;
-  border-bottom: 1px solid rgba(99, 102, 241, 0.1);
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .event-time {
-  color: #888;
-  min-width: 80px;
+  color: var(--text-muted);
+  min-width: 70px;
+  font-family: var(--font-mono);
+  font-size: 10px;
 }
 
 .event-type {
-  color: #6366f1;
-  min-width: 100px;
+  color: var(--accent-green);
+  min-width: 90px;
   font-weight: 500;
 }
 
 .event-data {
-  color: #ddd;
+  color: var(--text-primary);
   flex: 1;
 }
 
 .debug-empty {
-  color: #666;
-  font-size: 12px;
+  color: var(--text-muted);
+  font-size: 11px;
   font-style: italic;
-  padding: 12px 0;
+  padding: 8px 0;
 }
 
 .debug-log {
-  max-height: 200px;
+  max-height: 180px;
   overflow-y: auto;
-  background: rgba(0, 0, 0, 0.3);
-  border-radius: 8px;
-  padding: 12px;
+  background: var(--bg-alt);
+  border-radius: 4px;
+  padding: 8px;
 }
 
 .log-entry {
-  font-size: 11px;
-  font-family: 'Monaco', 'Menlo', monospace;
-  color: #ddd;
-  padding: 4px 0;
-  border-bottom: 1px solid rgba(99, 102, 241, 0.1);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .log-entry:last-child {
@@ -401,31 +409,32 @@ onMounted(() => {
 
 .debug-instructions {
   margin: 0;
-  padding-left: 20px;
+  padding-left: 18px;
 }
 
 .debug-instructions li {
-  margin-bottom: 8px;
-  font-size: 12px;
-  color: #ddd;
-  line-height: 1.6;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--text-primary);
+  line-height: 1.5;
 }
 
 .debug-instructions code {
-  background: rgba(99, 102, 241, 0.2);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-family: 'Monaco', 'Menlo', monospace;
+  background: var(--bg-alt);
+  border: 1px solid var(--border-light);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-family: var(--font-mono);
 }
 
 .status-success {
-  color: #4ade80 !important;
+  color: var(--accent-green) !important;
   font-weight: 600;
 }
 
 .status-error {
-  color: #ef4444 !important;
+  color: var(--accent-red) !important;
   font-weight: 600;
 }
 </style>
