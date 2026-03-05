@@ -1,4 +1,4 @@
-# UNOS Tab Tracker
+# UNOS Web Extension
 
 A Chrome extension for continuous tab tracking with relationship analysis, metadata tagging, and comprehensive export capabilities.
 
@@ -14,16 +14,24 @@ A Chrome extension for continuous tab tracking with relationship analysis, metad
 - **Persistence** - Data survives browser restarts via URL-based matching
 - **Incognito Support** - Track incognito tabs with explicit flagging
 
-### Interactive Tab Management (NEW)
-- **Click to Navigate** - Click any tab in the popup to instantly switch to it
+### Interactive Tab Management
+- **Double-click to Navigate** - Double-click any tab to switch to it (popup stays open)
 - **Close Tabs** - Hover over tabs to reveal close button
 - **Drag & Drop** - Move tabs between windows by dragging
 - **Search & Filter** - Search across 1000+ tabs with debounced filtering
 - **Sort Options** - Sort by index, title, URL, active time, or creation date
 - **Compact View** - Toggle dense display for large tab counts
 - **Collapsible Windows** - Expand/collapse windows with one click
+- **Window Labels** - Human-readable "Window 1, 2, 3..." with Chrome IDs shown in grey
+- **Quick Copy** - Hover over current tab title to copy title or URL to clipboard
 
-### Export (NEW)
+### Tools Menu
+- **TOOLS Dropdown** - Header button with NASA/DARPA styling
+- **Export** (Active) - ZIP, JSON, or CSV export
+- **URL Grepper** (Coming Soon)
+- **Scroll Screenshot** (Coming Soon)
+
+### Export
 - **ZIP Export** (Recommended) - All tables as separate CSV files
   - sessions.csv, windows.csv, tabs.csv
   - visits.csv, relationships.csv, tags.csv
@@ -320,6 +328,9 @@ describe('MyFeature', () => {
 
 ## Future Plans
 
+- **URL Grepper** - Extract and filter URLs from pages
+- **Scroll Screenshot** - Full-page screenshot capture
+- **Keyboard shortcuts** - Open UNOS as a persistent panel window
 - PKM (Personal Knowledge Management) integration interface
 - Firefox support
 - Advanced search and filtering

@@ -321,19 +321,28 @@ storageManager.workingState.currentSessionId = newId;
 
 ## UI Components
 
-**App.vue** - Main popup with three view tabs:
-- **Recent**: Scrollable list of 20 most recent tabs (click to switch, hover for close button)
+**App.vue** - Main popup (700×600px, Chrome max height) with three view tabs:
+- **Recent**: Scrollable list of 30 most recent tabs (double-click to switch, hover for close button)
 - **Windows**: All windows with tabs - fully interactive management view
 - **Debug**: Initialization status and diagnostic tools
+- **Header**: UNOS logo, stat pills (tabs/windows/active time), TOOLS dropdown menu
+- **Current tab bar**: Shows active tab with favicon, title, domain, time, UTC timestamp, tags
+  - Hover over title reveals copy-title and copy-URL micro icons
+  - Edit tags/notes button, Save button
+- **TOOLS dropdown**: Export (active), URL Grepper (coming soon), Scroll Screenshot (coming soon)
+- **Theme**: Dark olive header (`#2A3328`), warm beige page (`#F5F4EE`), NASA/DARPA aesthetic
+- Popup stays open when switching tabs (no `window.close()`)
 
 **AllWindowsView.vue** - High-performance window/tab manager:
 - Search bar with debounced filtering (150ms) for 1000+ tabs
+- Toolbar buttons with descriptive hover tooltips
 - Collapsible windows (expand/collapse all buttons)
+- Window headers show "Window N (chromeId)" with sequential numbering
+- Focus window button (↗) inline after tab count
 - Sort by: index, title, URL, active time, created date
 - Compact/expanded view toggle
-- Click tab to switch, hover for close button
+- Double-click tab to switch, hover for close button
 - Drag-and-drop tabs between windows
-- Focus window button (↗)
 - Emits: `error`, `tabClosed` events
 
 **DebugPanel.vue** - Diagnostic interface for troubleshooting
