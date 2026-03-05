@@ -10,7 +10,7 @@ import type {
 } from './types';
 
 /**
- * UNOS Tab Tracker Database
+ * UNOS Web Extension Database
  *
  * Uses Dexie.js for IndexedDB access with:
  * - Type-safe tables

@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue';
+import { ref, onMounted, computed } from 'vue';
 import type { TrackedTab, TrackedWindow } from '../../src/db/types';
 import MetadataPanel from './components/MetadataPanel.vue';
 import ExportDialog from './components/ExportDialog.vue';
+import UrlGrepperDialog from './components/UrlGrepperDialog.vue';
+import ScrollCaptureDialog from './components/ScrollCaptureDialog.vue';
 import DebugPanel from './components/DebugPanel.vue';
 import AllWindowsView from './components/AllWindowsView.vue';
 
@@ -14,8 +16,9 @@ const loading = ref(true);
 const error = ref<string | null>(null);
 const showMetadataPanel = ref(false);
 const showExportDialog = ref(false);
+const showUrlGrepperDialog = ref(false);
+const showScrollCaptureDialog = ref(false);
 const activeView = ref<'recent' | 'windows' | 'debug'>('recent');
-const showToolsMenu = ref(false);
 
 // Computed
 const tabCount = computed(() => tabs.value.filter(t => !t.closedAt).length);
@@ -179,22 +182,9 @@ async function copyUrl() {
   await navigator.clipboard.writeText(currentTab.value.url);
 }
 
-// Click-outside handler for tools menu
-function handleClickOutside(e: MouseEvent) {
-  const wrapper = document.querySelector('.tools-wrapper');
-  if (wrapper && !wrapper.contains(e.target as Node)) {
-    showToolsMenu.value = false;
-  }
-}
-
 // Lifecycle
 onMounted(() => {
   loadData();
-  document.addEventListener('click', handleClickOutside);
-});
-
-onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside);
 });
 </script>
 
@@ -205,30 +195,21 @@ onUnmounted(() => {
       <div class="header-left">
         <span class="logo">UNOS</span>
         <span class="version">v0.1</span>
-      </div>
-      <div class="header-stats">
         <span class="stat-pill">{{ tabCount }} tabs</span>
         <span class="stat-pill">{{ windowCount }} win</span>
         <span class="stat-pill">{{ totalActiveTime }}</span>
       </div>
-      <div class="header-right tools-wrapper">
-        <button class="tools-trigger" @click="showToolsMenu = !showToolsMenu">
-          TOOLS <span class="tools-caret">&#9662;</span>
+      <div class="header-separator"></div>
+      <div class="header-tools">
+        <button class="tool-btn" @click="showExportDialog = true" title="Export">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 1v9M8 1L4.5 4.5M8 1l3.5 3.5M2 11v2.5a1 1 0 001 1h10a1 1 0 001-1V11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <div v-if="showToolsMenu" class="tools-dropdown">
-          <button class="tools-item" @click="showExportDialog = true; showToolsMenu = false">
-            <span class="tools-item-label">Export</span>
-            <span class="tools-item-status tools-item-active">ACTIVE</span>
-          </button>
-          <button class="tools-item tools-item-disabled" disabled>
-            <span class="tools-item-label">URL Grepper</span>
-            <span class="tools-item-status tools-item-soon">SOON</span>
-          </button>
-          <button class="tools-item tools-item-disabled" disabled>
-            <span class="tools-item-label">Scroll Screenshot</span>
-            <span class="tools-item-status tools-item-soon">SOON</span>
-          </button>
-        </div>
+        <button class="tool-btn" @click="showUrlGrepperDialog = true" title="URL Grepper">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 3h12M2 6.5h8M2 10h10M2 13.5h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <button class="tool-btn" @click="showScrollCaptureDialog = true" title="Scroll Screenshot">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2.5" y="1.5" width="11" height="13" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 5h5M5.5 8h5M5.5 11h3" stroke="currentColor" stroke-width="1" stroke-linecap="round" opacity="0.5"/><path d="M8 4v8M8 12l-2-2M8 12l2-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
       </div>
     </header>
 
@@ -360,6 +341,18 @@ onUnmounted(() => {
       :windows="windows"
       @close="showExportDialog = false"
     />
+
+    <!-- URL Grepper dialog -->
+    <UrlGrepperDialog
+      v-if="showUrlGrepperDialog"
+      @close="showUrlGrepperDialog = false"
+    />
+
+    <!-- Scroll Capture dialog -->
+    <ScrollCaptureDialog
+      v-if="showScrollCaptureDialog"
+      @close="showScrollCaptureDialog = false"
+    />
   </div>
 </template>
 
@@ -413,18 +406,18 @@ html, body {
 .header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   padding: 0 16px;
   height: 44px;
   background: var(--bg-header);
   color: var(--text-inverse);
   flex-shrink: 0;
+  gap: 12px;
 }
 
 .header-left {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
 }
 
 .logo {
@@ -438,11 +431,7 @@ html, body {
   font-size: 10px;
   color: var(--text-muted);
   font-weight: 500;
-}
-
-.header-stats {
-  display: flex;
-  gap: 10px;
+  margin-right: 2px;
 }
 
 .stat-pill {
@@ -454,109 +443,44 @@ html, body {
   border-radius: 10px;
 }
 
-.header-right {
+.header-separator {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.header-separator::after {
+  content: '';
+  width: 1px;
+  height: 22px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 1px;
+}
+
+.header-tools {
   display: flex;
   gap: 6px;
 }
 
-.tools-wrapper {
-  position: relative;
-}
-
-.tools-trigger {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(5, 150, 105, 0.35);
-  padding: 4px 12px;
-  border-radius: 4px;
+.tool-btn {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
   cursor: pointer;
-  font-size: 11px;
-  font-family: var(--font-mono);
-  font-weight: 600;
-  letter-spacing: 1.5px;
-  color: var(--text-inverse);
+  color: rgba(245, 245, 240, 0.7);
   transition: all 0.15s;
 }
 
-.tools-trigger:hover {
-  background: rgba(5, 150, 105, 0.15);
-  border-color: rgba(5, 150, 105, 0.5);
-}
-
-.tools-caret {
-  font-size: 10px;
-  margin-left: 2px;
-  opacity: 0.7;
-}
-
-.tools-dropdown {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  min-width: 200px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-warm);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-  z-index: 50;
-  overflow: hidden;
-}
-
-.tools-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 9px 14px;
-  background: none;
-  border: none;
-  border-bottom: 1px solid var(--border-light);
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--text-primary);
-  transition: background 0.12s;
-  text-align: left;
-}
-
-.tools-item:last-child {
-  border-bottom: none;
-}
-
-.tools-item:hover:not(:disabled) {
-  background: rgba(5, 150, 105, 0.08);
-}
-
-.tools-item-label {
-  font-weight: 500;
-}
-
-.tools-item-status {
-  font-size: 9px;
-  font-family: var(--font-mono);
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  padding: 2px 7px;
-  border-radius: 8px;
-}
-
-.tools-item-active {
-  background: rgba(5, 150, 105, 0.12);
-  color: var(--accent-green);
-  border: 1px solid rgba(5, 150, 105, 0.25);
-}
-
-.tools-item-soon {
-  background: rgba(217, 119, 6, 0.1);
-  color: var(--accent-amber);
-  border: 1px solid rgba(217, 119, 6, 0.2);
-}
-
-.tools-item-disabled {
-  cursor: default;
-  color: var(--text-muted);
-}
-
-.tools-item-disabled .tools-item-label {
-  font-weight: 400;
+.tool-btn:hover {
+  background: rgba(5, 150, 105, 0.2);
+  border-color: rgba(5, 150, 105, 0.45);
+  color: var(--text-inverse);
 }
 
 /* ── Loading & Error ── */

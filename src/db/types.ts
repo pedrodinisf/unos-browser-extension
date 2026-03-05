@@ -1,4 +1,4 @@
-// Database entity types for UNOS Tab Tracker
+// Database entity types for UNOS Web Extension
 
 /**
  * Core tracked tab entity - the primary data structure

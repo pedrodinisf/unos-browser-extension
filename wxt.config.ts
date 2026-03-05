@@ -3,10 +3,10 @@ import { defineConfig } from 'wxt';
 export default defineConfig({
   modules: ['@wxt-dev/module-vue'],
   manifest: {
-    name: 'UNOS Tab Tracker',
+    name: 'UNOS Web Extension',
     description: 'Track tab usage, relationships, and metadata',
     version: '0.0.1',
-    permissions: ['tabs', 'storage', 'alarms'],
+    permissions: ['tabs', 'storage', 'alarms', 'downloads', 'scripting', 'offscreen'],
     host_permissions: ['<all_urls>'],
   },
 });

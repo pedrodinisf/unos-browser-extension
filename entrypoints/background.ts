@@ -1,4 +1,4 @@
-// Service worker entry point for UNOS Tab Tracker
+// Service worker entry point for UNOS Web Extension
 // CRITICAL: All event listeners MUST be registered synchronously at top level
 // This is a Manifest V3 requirement - do NOT wrap in async functions
 
@@ -7,6 +7,7 @@ import { getTabTracker } from '../src/services/TabTracker';
 import { getWindowTracker } from '../src/services/WindowTracker';
 import { getRelationshipManager } from '../src/services/RelationshipManager';
 import { getInitializationService } from '../src/services/InitializationService';
+import { getCaptureService } from '../src/services/CaptureService';
 import { TIMING, ALARM_NAMES } from '../src/constants';
 
 export default defineBackground(() => {
@@ -215,11 +216,19 @@ export default defineBackground(() => {
   // ============================================
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Guard: only handle messages with a `type` field (UNOS protocol).
+    // Messages without `type` (e.g. offscreen `action` messages) must pass through.
+    if (!message.type) return false;
+
     console.log('[UNOS] Message received:', message.type);
 
     // Handle async operations
     (async () => {
       try {
+        // Ensure StorageManager is initialized (restores workingState from
+        // chrome.storage.session after service worker wake-up from idle).
+        await storageManager.ensureInitialized();
+
         switch (message.type) {
           case 'GET_CURRENT_TAB': {
             const persistentId = storageManager.getActiveTabPersistentId();
@@ -377,6 +386,17 @@ export default defineBackground(() => {
             await initService.initialize();
             const status = await initService.getStatus();
             sendResponse({ success: true, data: status });
+            break;
+          }
+
+          case 'START_CAPTURE': {
+            // Fire-and-forget: capture is long-running (scroll + stitch + download).
+            // Progress is tracked via chrome.storage.local, not the message response.
+            // Awaiting here would hold the message channel open for minutes and
+            // Chrome would time it out with a spurious error.
+            const captureService = getCaptureService();
+            captureService.startCapture(message.options || {}).catch(console.error);
+            sendResponse({ success: true });
             break;
           }
 
