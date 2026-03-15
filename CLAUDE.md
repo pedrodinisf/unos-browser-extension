@@ -402,15 +402,18 @@ storageManager.workingState.currentSessionId = newId;
 ## UI Components
 
 **App.vue** - Main popup (700×600px, Chrome max height) with four view tabs:
-- **Recent**: Scrollable list of 30 most recent tabs (double-click to switch, hover for close button)
-- **Windows**: All windows with tabs - fully interactive management view
-- **X Marks**: X/Twitter bookmark sync, search, and management
-- **Debug**: Initialization status and diagnostic tools
-- **Header**: UNOS logo, stat pills (tabs/windows/active time), TOOLS dropdown menu
+- **Tab bar order** (left to right): `✕ MARKS` | `◷ RECENT` | `⌗ WINDOWS` | `⚙ DIAG`
+- **Default view**: X Marks (opens on popup launch)
+- **Tab labels**: Monospace font, wide letter-spacing, Unicode symbol prefix — NASA instrument panel aesthetic
+- **✕ MARKS**: X/Twitter bookmark sync, search, and management (default)
+- **◷ RECENT**: Scrollable list of 30 most recent tabs (double-click to switch, hover for close button)
+- **⌗ WINDOWS**: All windows with tabs - fully interactive management view
+- **⚙ DIAG**: Initialization status and diagnostic tools
+- **Header**: UNOS logo, stat pills (tabs/windows/active time), tool icon buttons
 - **Current tab bar**: Shows active tab with favicon, title, domain, time, UTC timestamp, tags
   - Hover over title reveals copy-title and copy-URL micro icons
   - Edit tags/notes button, Save button
-- **TOOLS dropdown**: Export, URL Grepper, Scroll Screenshot
+- **Tool buttons**: Export, URL Grepper, Scroll Screenshot (icon-only in header)
 - **Theme**: Dark olive header (`#2A3328`), warm beige page (`#F5F4EE`), NASA/DARPA aesthetic
 - Popup stays open when switching tabs (no `window.close()`)
 
@@ -451,9 +454,12 @@ storageManager.workingState.currentSessionId = newId;
 **XBookmarksView.vue** - X/Twitter bookmark manager:
 - Header: Sync button (spinner during sync), last sync time, bookmark count, export buttons (JSON/Markdown)
 - Search bar with debounced filtering (150ms), "Show archived" toggle
-- Scrollable bookmark list (newest first, paginated at 100)
-- Collapsed row: author avatar circle, @handle, display name, truncated text, relative timestamp, media badges, tag pills
-- Click to expand: full text, image thumbnails, tag editor (add/remove inline), notes textarea, archive button, "Open on X" link
+- Sort controls: bookmarked date / tweet date / author, asc/desc toggle
+- Content filters dropdown: has images, has video, has tags (badge shows active count)
+- Scrollable bookmark list with infinite scroll (IntersectionObserver, paginated at 100)
+- Collapsed row: author avatar circle, @handle, display name, truncated text with green left border, relative timestamp, media badges, tag pills
+- Tweet text formatting: @mentions highlighted green, URLs in amber, #hashtags in green; emojis preserved natively
+- Click to expand: full text in blockquote-style panel (green left border, beige background, 13px/1.65 line-height), image thumbnails, tag editor (add/remove inline), notes textarea, archive button, "Open on X" link
 - Video bookmarks: "Download Video" button (uses native messaging host), "Copy URL" fallback
 - Download states: downloading spinner, "Downloaded ✓", error with retry
 - Empty state with sync instructions

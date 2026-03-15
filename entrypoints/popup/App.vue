@@ -19,7 +19,7 @@ const showMetadataPanel = ref(false);
 const showExportDialog = ref(false);
 const showUrlGrepperDialog = ref(false);
 const showScrollCaptureDialog = ref(false);
-const activeView = ref<'recent' | 'windows' | 'xbookmarks' | 'debug'>('recent');
+const activeView = ref<'recent' | 'windows' | 'xbookmarks' | 'debug'>('xbookmarks');
 const chromeMemoryMB = ref<number | null>(null);
 
 // Tweet page detection state
@@ -430,28 +430,34 @@ onUnmounted(() => {
       <div class="view-tabs">
         <button
           class="view-tab"
+          :class="{ active: activeView === 'xbookmarks' }"
+          @click="activeView = 'xbookmarks'"
+        ><span class="view-tab-icon">&#x2715;</span>MARKS</button>
+        <button
+          class="view-tab"
           :class="{ active: activeView === 'recent' }"
           @click="activeView = 'recent'"
-        >RECENT</button>
+        ><span class="view-tab-icon">&#x25F7;</span>RECENT</button>
         <button
           class="view-tab"
           :class="{ active: activeView === 'windows' }"
           @click="activeView = 'windows'"
-        >WINDOWS</button>
-        <button
-          class="view-tab"
-          :class="{ active: activeView === 'xbookmarks' }"
-          @click="activeView = 'xbookmarks'"
-        >X MARKS</button>
+        ><span class="view-tab-icon">&#x2317;</span>WINDOWS</button>
         <button
           class="view-tab"
           :class="{ active: activeView === 'debug' }"
           @click="activeView = 'debug'"
-        >DEBUG</button>
+        ><span class="view-tab-icon">&#x2699;</span>DIAG</button>
       </div>
 
+      <!-- X Bookmarks View -->
+      <XBookmarksView
+        v-if="activeView === 'xbookmarks'"
+        class="view-content"
+      />
+
       <!-- Recent Tabs View -->
-      <section v-if="activeView === 'recent'" class="view-content">
+      <section v-else-if="activeView === 'recent'" class="view-content">
         <div class="tabs-list">
           <div
             v-for="tab in recentTabs"
@@ -491,12 +497,6 @@ onUnmounted(() => {
         :tabs="tabs"
         class="view-content"
         @dataChanged="loadData"
-      />
-
-      <!-- X Bookmarks View -->
-      <XBookmarksView
-        v-else-if="activeView === 'xbookmarks'"
-        class="view-content"
       />
 
       <!-- Debug Panel -->
@@ -901,11 +901,16 @@ html, body {
   border-bottom: 2px solid transparent;
   padding: 0 12px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.5px;
+  letter-spacing: 1.2px;
+  font-family: var(--font-mono);
   color: var(--text-muted);
   transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
 }
 
 .view-tab:hover {
@@ -916,6 +921,16 @@ html, body {
 .view-tab.active {
   color: var(--accent-green);
   border-bottom-color: var(--accent-green);
+}
+
+.view-tab-icon {
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.view-tab.active .view-tab-icon {
+  opacity: 1;
 }
 
 /* ── View Content ── */

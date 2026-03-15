@@ -283,6 +283,34 @@ function bookmarkedAge(ts: number): string {
   return `${years}y ago`;
 }
 
+// Format tweet text: preserve emojis, highlight @mentions and URLs
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatTweetHtml(text: string): string {
+  let html = escapeHtml(text);
+  // Highlight @mentions
+  html = html.replace(/@(\w+)/g, '<span class="xbm-mention">@$1</span>');
+  // Highlight URLs
+  html = html.replace(/(https?:\/\/[^\s]+)/g, '<span class="xbm-url">$1</span>');
+  // Highlight hashtags
+  html = html.replace(/#(\w+)/g, '<span class="xbm-hashtag">#$1</span>');
+  return html;
+}
+
+function formatTweetPreview(text: string): string {
+  return formatTweetHtml(text);
+}
+
+function formatTweetFull(text: string): string {
+  return formatTweetHtml(text);
+}
+
 function authorInitial(handle: string): string {
   return (handle.replace('@', '')[0] || '?').toUpperCase();
 }
@@ -586,7 +614,7 @@ watch(bookmarks, () => {
                 {{ showBookmarkedTime ? bookmarkedAge(bm.firstSeenAt) : tweetAge(bm.timestamp) }}
               </span>
             </div>
-            <div class="xbm-row-text">{{ bm.text }}</div>
+            <div class="xbm-row-text" v-html="formatTweetPreview(bm.text)"></div>
           </div>
           <div class="xbm-row-meta">
             <span v-if="bm.mediaUrls.length > 0" class="xbm-media-badge" title="Has images">
@@ -604,7 +632,7 @@ watch(bookmarks, () => {
         <!-- Expanded detail -->
         <div v-if="expandedTweetId === bm.tweetId" class="xbm-detail">
           <!-- Full text -->
-          <div class="xbm-detail-text">{{ bm.text }}</div>
+          <div class="xbm-detail-text" v-html="formatTweetFull(bm.text)"></div>
 
           <!-- Timestamp info -->
           <div class="xbm-detail-timestamps">
@@ -1169,13 +1197,17 @@ watch(bookmarks, () => {
 }
 
 .xbm-row-text {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary);
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
-  line-height: 1.4;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  padding-left: 8px;
+  border-left: 2px solid rgba(5, 150, 105, 0.15);
+  margin-top: 3px;
 }
 
 .xbm-row-meta {
@@ -1229,11 +1261,53 @@ watch(bookmarks, () => {
 }
 
 .xbm-detail-text {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-primary);
-  line-height: 1.5;
+  line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
+  letter-spacing: 0.015em;
+  padding: 10px 14px;
+  background: rgba(245, 244, 238, 0.6);
+  border-left: 3px solid var(--accent-green);
+  border-radius: 0 4px 4px 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Tweet text inline highlights */
+.xbm-detail-text :deep(.xbm-mention) {
+  color: var(--accent-green);
+  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+.xbm-detail-text :deep(.xbm-url) {
+  color: var(--accent-amber);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  word-break: break-all;
+}
+
+.xbm-detail-text :deep(.xbm-hashtag) {
+  color: var(--accent-green);
+  font-weight: 500;
+}
+
+/* Same highlights for collapsed preview */
+.xbm-row-text :deep(.xbm-mention) {
+  color: var(--accent-green);
+  font-weight: 600;
+  font-size: 0.92em;
+}
+
+.xbm-row-text :deep(.xbm-url) {
+  color: var(--accent-amber);
+  font-size: 0.9em;
+}
+
+.xbm-row-text :deep(.xbm-hashtag) {
+  color: var(--accent-green);
 }
 
 .xbm-detail-timestamps {

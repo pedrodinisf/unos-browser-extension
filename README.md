@@ -33,23 +33,26 @@ A Chrome extension for continuous tab tracking with relationship analysis, metad
 - **Window Labels** - Human-readable "Window 1, 2, 3..." with Chrome IDs shown in grey
 - **Quick Copy** - Hover over current tab title to copy title or URL to clipboard
 
-### X/Twitter Bookmarks
+### X/Twitter Bookmarks (Default View)
+- **Default on launch** — X Marks is the first tab and opens automatically
 - **Bookmark Sync** — Syncs bookmarks from `x.com/i/bookmarks` directly inside Chrome
 - **Incremental Sync** — Stops early after finding 5 consecutive known bookmarks
 - **Full Sync** — Scrolls through entire bookmarks page to capture everything
 - **Search & Filter** — Debounced text search across tweet content and author handles
 - **Sort** — Sort by bookmarked date (default), tweet date, or author; toggle asc/desc
 - **Content Filters** — Filter by has images, has video, or has tags via dropdown
-- **Infinite Scroll** — Auto-loads more bookmarks as you scroll (replaces manual "Load more" button)
+- **Infinite Scroll** — Auto-loads more bookmarks as you scroll via IntersectionObserver
+- **Readable Text** — Tweet text displayed with green left-border blockquote style; @mentions, URLs, and #hashtags highlighted inline; emojis preserved natively
 - **Tag & Notes** — Add tags and notes to any bookmark, inline editing
 - **Archive** — Soft-delete bookmarks without losing data
 - **Export** — JSON or Markdown export (Markdown groups by month with stats)
 - **Video Download** — Download videos from bookmarked tweets via yt-dlp (requires native host setup)
-- **Quick Video Download** — Header toolbar button auto-detects bookmarked tweets with video on the active tab (uses `data-testid` for reliable detection)
+- **Quick Video Download** — Header toolbar button auto-detects bookmarked tweets with video on the active tab
 - **Media Indicators** — Image count badges and video flags on each bookmark
 
-### Tools Menu
-- **TOOLS Dropdown** - Header button with NASA/DARPA styling
+### Navigation & Tools
+- **Tab bar** — `✕ MARKS` | `◷ RECENT` | `⌗ WINDOWS` | `⚙ DIAG` — monospace, NASA instrument panel style
+- **Tool buttons** — Icon-only buttons in header: Export, URL Grepper, Scroll Screenshot
 - **Export** - ZIP, JSON, or CSV export
 - **URL Grepper** - Extract, filter, and download URLs from any page via regex
 - **Scroll Screenshot** - Full-page scroll capture stitched into a single PNG
