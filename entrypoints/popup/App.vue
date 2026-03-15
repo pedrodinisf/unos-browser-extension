@@ -901,11 +901,12 @@ html, body {
   border-bottom: 2px solid transparent;
   padding: 0 12px;
   cursor: pointer;
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 700;
   letter-spacing: 1.2px;
   font-family: var(--font-mono);
-  color: var(--text-muted);
+  color: var(--text-secondary);
+  -webkit-font-smoothing: antialiased;
   transition: all 0.15s;
   display: flex;
   align-items: center;
@@ -914,13 +915,14 @@ html, body {
 }
 
 .view-tab:hover {
-  color: var(--text-secondary);
+  color: var(--text-primary);
   background: var(--bg-alt);
 }
 
 .view-tab.active {
   color: var(--accent-green);
   border-bottom-color: var(--accent-green);
+  font-weight: 800;
 }
 
 .view-tab-icon {
