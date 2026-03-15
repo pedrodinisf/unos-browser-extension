@@ -232,6 +232,11 @@ async function clearDownloadStatus() {
   } catch { /* ignore */ }
 }
 
+// Open URL in background tab (popup stays open)
+function openInBackground(url: string) {
+  chrome.tabs.create({ url, active: false });
+}
+
 // Copy tweet URL as fallback
 async function copyTweetUrl(tweetUrl: string) {
   try {
@@ -712,7 +717,7 @@ watch(bookmarks, () => {
 
           <!-- Actions -->
           <div class="xbm-detail-actions">
-            <a :href="bm.tweetUrl" target="_blank" class="xbm-link-btn" @click.stop>Open on X</a>
+            <button class="xbm-link-btn" @click.stop="openInBackground(bm.tweetUrl)">Open on X</button>
             <button
               v-if="!bm.archived"
               class="xbm-archive-btn"
