@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, onUnmounted, computed } from 'vue';
 import type { TrackedTab, TrackedWindow } from '../../src/db/types';
 import MetadataPanel from './components/MetadataPanel.vue';
 import ExportDialog from './components/ExportDialog.vue';
@@ -7,6 +7,7 @@ import UrlGrepperDialog from './components/UrlGrepperDialog.vue';
 import ScrollCaptureDialog from './components/ScrollCaptureDialog.vue';
 import DebugPanel from './components/DebugPanel.vue';
 import AllWindowsView from './components/AllWindowsView.vue';
+import XBookmarksView from './components/XBookmarksView.vue';
 
 // State
 const currentTab = ref<TrackedTab | null>(null);
@@ -18,7 +19,50 @@ const showMetadataPanel = ref(false);
 const showExportDialog = ref(false);
 const showUrlGrepperDialog = ref(false);
 const showScrollCaptureDialog = ref(false);
-const activeView = ref<'recent' | 'windows' | 'debug'>('recent');
+const activeView = ref<'recent' | 'windows' | 'xbookmarks' | 'debug'>('recent');
+const chromeMemoryMB = ref<number | null>(null);
+
+// Tweet page detection state
+const isTweetPage = ref(false);
+const tweetHasVideo = ref(false);
+const tweetIsBookmarked = ref(false);
+const tweetUrl = ref('');
+const tweetDownloadStatus = ref<'idle' | 'downloading' | 'done' | 'error'>('idle');
+const tweetDownloadError = ref('');
+
+// Fetch Chrome RAM usage
+async function loadMemory() {
+  try {
+    // Try per-process memory via chrome.processes (most accurate for Chrome RAM)
+    if (chrome.processes?.getProcessInfo) {
+      const processes: Record<number, chrome.processes.Process> = await new Promise((resolve) => {
+        chrome.processes.getProcessInfo([], true, resolve);
+      });
+      let totalBytes = 0;
+      for (const proc of Object.values(processes)) {
+        totalBytes += proc.privateMemory || 0;
+      }
+      if (totalBytes > 0) {
+        chromeMemoryMB.value = Math.round(totalBytes / (1024 * 1024));
+        return;
+      }
+    }
+  } catch { /* processes API not available, fall through */ }
+
+  try {
+    // Fallback: system memory (total - available = used by all apps)
+    if (chrome.system?.memory?.getInfo) {
+      const info = await chrome.system.memory.getInfo();
+      const usedBytes = info.capacity - info.availableCapacity;
+      chromeMemoryMB.value = Math.round(usedBytes / (1024 * 1024));
+    }
+  } catch { /* ignore */ }
+}
+
+function formatMemory(mb: number): string {
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  return `${mb} MB`;
+}
 
 // Computed
 const tabCount = computed(() => tabs.value.filter(t => !t.closedAt).length);
@@ -77,9 +121,74 @@ async function sendMessage<T>(message: Record<string, unknown>): Promise<T> {
   });
 }
 
+// Detect if active tab is an X/Twitter tweet with video + bookmark status
+async function checkTweetPage() {
+  isTweetPage.value = false;
+  tweetHasVideo.value = false;
+  tweetIsBookmarked.value = false;
+  tweetUrl.value = '';
+
+  // Get the actual active Chrome tab
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!activeTab?.id || !activeTab.url) return;
+
+  const match = activeTab.url.match(/^https:\/\/(x\.com|twitter\.com)\/[^/]+\/status\/\d+/);
+  if (!match) return;
+
+  isTweetPage.value = true;
+  tweetUrl.value = activeTab.url.split('?')[0];
+
+  try {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: activeTab.id },
+      func: () => {
+        const hasVideo = !!document.querySelector('video') ||
+                         !!document.querySelector('[data-testid="videoPlayer"]');
+        const isBookmarked = !!document.querySelector('[data-testid="removeBookmark"]');
+        return { hasVideo, isBookmarked };
+      },
+    });
+    if (result?.result) {
+      tweetHasVideo.value = result.result.hasVideo;
+      tweetIsBookmarked.value = result.result.isBookmarked;
+    }
+  } catch {
+    // Content script injection failed (e.g. page not fully loaded)
+  }
+}
+
+// Download video from current tweet
+async function downloadCurrentTweetVideo() {
+  if (!tweetUrl.value || tweetDownloadStatus.value === 'downloading') return;
+  try {
+    tweetDownloadStatus.value = 'downloading';
+    tweetDownloadError.value = '';
+    await sendMessage({ type: 'X_DOWNLOAD_VIDEO', tweetUrl: tweetUrl.value });
+  } catch (err) {
+    tweetDownloadStatus.value = 'error';
+    tweetDownloadError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+// Monitor download progress for the toolbar button
+function onDownloadStorageChanged(changes: Record<string, chrome.storage.StorageChange>, area: string) {
+  if (area !== 'local') return;
+  if (changes.xBookmarks_downloadStatus) {
+    const status = changes.xBookmarks_downloadStatus.newValue;
+    if (status === 'done' || status === 'error' || status === 'idle') {
+      tweetDownloadStatus.value = status;
+    }
+  }
+  if (changes.xBookmarks_downloadError) {
+    tweetDownloadError.value = changes.xBookmarks_downloadError.newValue || '';
+  }
+}
+
 async function loadData() {
   try {
-    loading.value = true;
+    // Only show loading spinner on initial load, not refreshes.
+    // Setting loading=true unmounts AllWindowsView, losing scroll/drag state.
+    if (!tabs.value.length && !windows.value.length) loading.value = true;
     error.value = null;
 
     // Load current tab
@@ -182,9 +291,30 @@ async function copyUrl() {
   await navigator.clipboard.writeText(currentTab.value.url);
 }
 
+// Auto-refresh when background reports data changes
+let refreshTimeout: ReturnType<typeof setTimeout> | null = null;
+
+function onBackgroundMessage(message: any) {
+  if (message?.type === 'DATA_CHANGED') {
+    // Debounce rapid changes (e.g. multiple tabs moved at once)
+    if (refreshTimeout) clearTimeout(refreshTimeout);
+    refreshTimeout = setTimeout(() => loadData(), 300);
+  }
+}
+
 // Lifecycle
 onMounted(() => {
   loadData();
+  loadMemory();
+  checkTweetPage();
+  chrome.runtime.onMessage.addListener(onBackgroundMessage);
+  chrome.storage.onChanged.addListener(onDownloadStorageChanged);
+});
+
+onUnmounted(() => {
+  chrome.runtime.onMessage.removeListener(onBackgroundMessage);
+  chrome.storage.onChanged.removeListener(onDownloadStorageChanged);
+  if (refreshTimeout) clearTimeout(refreshTimeout);
 });
 </script>
 
@@ -198,9 +328,38 @@ onMounted(() => {
         <span class="stat-pill">{{ tabCount }} tabs</span>
         <span class="stat-pill">{{ windowCount }} win</span>
         <span class="stat-pill">{{ totalActiveTime }}</span>
+        <span v-if="chromeMemoryMB !== null" class="stat-pill">{{ formatMemory(chromeMemoryMB) }} RAM</span>
       </div>
       <div class="header-separator"></div>
       <div class="header-tools">
+        <!-- Video download button: visible when on a bookmarked X tweet with video -->
+        <button
+          v-if="isTweetPage && tweetHasVideo && tweetIsBookmarked"
+          class="tool-btn tool-btn-video"
+          :class="{
+            downloading: tweetDownloadStatus === 'downloading',
+            done: tweetDownloadStatus === 'done',
+            error: tweetDownloadStatus === 'error',
+          }"
+          :disabled="tweetDownloadStatus === 'downloading'"
+          :title="tweetDownloadStatus === 'downloading' ? 'Downloading video...' :
+                  tweetDownloadStatus === 'done' ? 'Download complete!' :
+                  tweetDownloadStatus === 'error' ? `Error: ${tweetDownloadError}` :
+                  'Download video from this tweet'"
+          @click="downloadCurrentTweetVideo"
+        >
+          <!-- Spinner when downloading -->
+          <span v-if="tweetDownloadStatus === 'downloading'" class="tool-spinner"></span>
+          <!-- Checkmark when done -->
+          <svg v-else-if="tweetDownloadStatus === 'done'" width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <path d="M3 8.5l3.5 3.5L13 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <!-- Download icon (default + error) -->
+          <svg v-else width="14" height="14" viewBox="0 0 16 16" fill="none">
+            <polygon points="6,1 10,1 10,7 13,7 8,13 3,7 6,7" fill="currentColor"/>
+            <rect x="2" y="13.5" width="12" height="1.5" rx="0.5" fill="currentColor"/>
+          </svg>
+        </button>
         <button class="tool-btn" @click="showExportDialog = true" title="Export">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 1v9M8 1L4.5 4.5M8 1l3.5 3.5M2 11v2.5a1 1 0 001 1h10a1 1 0 001-1V11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
@@ -281,6 +440,11 @@ onMounted(() => {
         >WINDOWS</button>
         <button
           class="view-tab"
+          :class="{ active: activeView === 'xbookmarks' }"
+          @click="activeView = 'xbookmarks'"
+        >X MARKS</button>
+        <button
+          class="view-tab"
           :class="{ active: activeView === 'debug' }"
           @click="activeView = 'debug'"
         >DEBUG</button>
@@ -325,6 +489,13 @@ onMounted(() => {
         v-else-if="activeView === 'windows'"
         :windows="windows"
         :tabs="tabs"
+        class="view-content"
+        @dataChanged="loadData"
+      />
+
+      <!-- X Bookmarks View -->
+      <XBookmarksView
+        v-else-if="activeView === 'xbookmarks'"
         class="view-content"
       />
 
@@ -481,6 +652,47 @@ html, body {
   background: rgba(5, 150, 105, 0.2);
   border-color: rgba(5, 150, 105, 0.45);
   color: var(--text-inverse);
+}
+
+.tool-btn-video {
+  background: rgba(5, 150, 105, 0.25);
+  border-color: rgba(5, 150, 105, 0.5);
+  color: #4ade80;
+}
+
+.tool-btn-video:hover:not(:disabled) {
+  background: rgba(5, 150, 105, 0.4);
+  border-color: rgba(5, 150, 105, 0.7);
+  color: #fff;
+}
+
+.tool-btn-video.downloading {
+  background: rgba(217, 119, 6, 0.25);
+  border-color: rgba(217, 119, 6, 0.5);
+  color: #fbbf24;
+  cursor: wait;
+}
+
+.tool-btn-video.done {
+  background: rgba(5, 150, 105, 0.3);
+  border-color: rgba(5, 150, 105, 0.6);
+  color: #4ade80;
+}
+
+.tool-btn-video.error {
+  background: rgba(220, 38, 38, 0.2);
+  border-color: rgba(220, 38, 38, 0.4);
+  color: #f87171;
+}
+
+.tool-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #fbbf24;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
 }
 
 /* ── Loading & Error ── */

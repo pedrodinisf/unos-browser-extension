@@ -8,6 +8,16 @@
     return createImageBitmap(blob);
   }
 
+  // Convert a Blob to a data URL
+  function blobToDataUrl(blob) {
+    return new Promise(function(resolve, reject) {
+      var reader = new FileReader();
+      reader.onloadend = function() { resolve(reader.result); };
+      reader.onerror = function() { reject(new Error('Failed to read blob')); };
+      reader.readAsDataURL(blob);
+    });
+  }
+
   // Stitch frames into a single PNG
   async function stitchFrames(frames, pageUrl, dpr) {
     if (!frames || frames.length === 0) {
@@ -15,37 +25,36 @@
     }
 
     // Decode first frame to get pixel dimensions
-    const firstImg = await loadImage(frames[0].dataUrl);
-    const width = firstImg.width;
-    const frameHeight = firstImg.height;
+    var firstImg = await loadImage(frames[0].dataUrl);
+    var width = firstImg.width;
+    var frameHeight = firstImg.height;
 
     // Calculate total height from actual scroll positions
     // Frame 0 contributes its full height
     // Frames 1+ contribute the scroll delta (in physical pixels)
-    let totalHeight = frameHeight;
-    for (let i = 1; i < frames.length; i++) {
-      const scrollDelta = (frames[i].actualY - frames[i - 1].actualY) * dpr;
+    var totalHeight = frameHeight;
+    for (var i = 1; i < frames.length; i++) {
+      var scrollDelta = (frames[i].actualY - frames[i - 1].actualY) * dpr;
       totalHeight += Math.round(scrollDelta);
     }
 
     // Enforce canvas size limits (32,767px per axis, 268M total pixels)
-    const MAX_HEIGHT = Math.min(32767, Math.floor(268435456 / width));
-    const truncated = totalHeight > MAX_HEIGHT;
-    if (truncated) {
+    var MAX_HEIGHT = Math.min(32767, Math.floor(268435456 / width));
+    if (totalHeight > MAX_HEIGHT) {
       totalHeight = MAX_HEIGHT;
     }
 
     // Create canvas and draw frames
-    const canvas = new OffscreenCanvas(width, totalHeight);
-    const ctx = canvas.getContext('2d');
+    var canvas = new OffscreenCanvas(width, totalHeight);
+    var ctx = canvas.getContext('2d');
 
-    let drawY = 0;
-    for (let i = 0; i < frames.length; i++) {
-      const img = (i === 0) ? firstImg : await loadImage(frames[i].dataUrl);
+    var drawY = 0;
+    for (var j = 0; j < frames.length; j++) {
+      var img = (j === 0) ? firstImg : await loadImage(frames[j].dataUrl);
 
-      if (i > 0) {
-        const scrollDelta = (frames[i].actualY - frames[i - 1].actualY) * dpr;
-        drawY += Math.round(scrollDelta);
+      if (j > 0) {
+        var delta = (frames[j].actualY - frames[j - 1].actualY) * dpr;
+        drawY += Math.round(delta);
       }
 
       // Don't draw beyond canvas bounds
@@ -53,29 +62,16 @@
 
       if (drawY + img.height > totalHeight) {
         // Crop last frame
-        const cropHeight = totalHeight - drawY;
+        var cropHeight = totalHeight - drawY;
         ctx.drawImage(img, 0, 0, width, cropHeight, 0, drawY, width, cropHeight);
       } else {
         ctx.drawImage(img, 0, drawY);
       }
     }
 
-    // Export as PNG blob
-    const blob = await canvas.convertToBlob({ type: 'image/png' });
-    const blobUrl = URL.createObjectURL(blob);
-
-    // Sidecar metadata
-    const metadata = {
-      url: pageUrl,
-      capturedAt: new Date().toISOString(),
-      dimensions: { width: width, height: totalHeight },
-      cssPixels: { width: Math.round(width / dpr), height: Math.round(totalHeight / dpr) },
-      frameCount: frames.length,
-      devicePixelRatio: dpr,
-      truncated: truncated
-    };
-    const jsonBlob = new Blob([JSON.stringify(metadata, null, 2)], { type: 'application/json' });
-    const jsonBlobUrl = URL.createObjectURL(jsonBlob);
+    // Export as PNG blob, then convert to data URL so it works cross-context
+    var blob = await canvas.convertToBlob({ type: 'image/png' });
+    var dataUrl = await blobToDataUrl(blob);
 
     // Generate filename from URL
     var hostname;
@@ -84,9 +80,9 @@
     } catch (e) {
       hostname = 'capture';
     }
-    const filename = 'capture_' + hostname + '_' + Date.now();
+    var filename = 'capture_' + hostname + '_' + Date.now();
 
-    return { blobUrl: blobUrl, jsonBlobUrl: jsonBlobUrl, filename: filename };
+    return { dataUrl: dataUrl, filename: filename };
   }
 
   // Listen for stitch requests from background

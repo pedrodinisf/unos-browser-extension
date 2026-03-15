@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import type { TrackedWindow, TrackedTab } from '../../../src/db/types';
 
 const props = defineProps<{
@@ -9,28 +9,213 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   error: [message: string];
-  tabClosed: [persistentId: string];
+  dataChanged: [];
 }>();
+
+// Sort types
+type SortField = 'index' | 'title' | 'url' | 'time' | 'created';
 
 // State
 const collapsedWindows = ref<Set<string>>(new Set());
-const sortBy = ref<'index' | 'title' | 'url' | 'time' | 'created'>('index');
-const sortAsc = ref(true);
-const searchQuery = ref('');
-const debouncedSearch = ref('');
+const windowSortBy = ref<Map<string, SortField>>(new Map());
+const windowSortAsc = ref<Map<string, boolean>>(new Map());
+const windowSearch = ref<Map<string, string>>(new Map());
 const draggedTab = ref<TrackedTab | null>(null);
-const dragOverWindow = ref<string | null>(null);
+const dropTarget = ref<{ windowPersistentId: string; insertBeforeTabId: string | null; position: 'before' | 'after' } | null>(null);
 const showCompact = ref(true);
 const isLoading = ref(false);
 
-// Debounce search for performance with 1000+ tabs
-let searchTimeout: ReturnType<typeof setTimeout> | null = null;
-function updateSearch(query: string) {
-  searchQuery.value = query;
-  if (searchTimeout) clearTimeout(searchTimeout);
-  searchTimeout = setTimeout(() => {
-    debouncedSearch.value = query;
-  }, 150);
+// Selection state
+const selectedTabs = ref<Set<string>>(new Set());
+const lastClickedTabId = ref<string | null>(null);
+const bulkTagInput = ref('');
+
+const hasSelection = computed(() => selectedTabs.value.size > 0);
+const selectedCount = computed(() => selectedTabs.value.size);
+
+const selectedTabObjects = computed(() => {
+  return props.tabs.filter(t => selectedTabs.value.has(t.persistentId) && !t.closedAt);
+});
+
+// Ordered list of all visible tabs (across all windows) for shift+click range
+const allVisibleTabsOrdered = computed(() => {
+  const result: TrackedTab[] = [];
+  for (const win of openWindows.value) {
+    if (!collapsedWindows.value.has(win.persistentId)) {
+      result.push(...getTabsForWindow(win.persistentId));
+    }
+  }
+  return result;
+});
+
+// Prune stale selections when tabs change
+watch(() => props.tabs, (newTabs) => {
+  const validIds = new Set(newTabs.filter(t => !t.closedAt).map(t => t.persistentId));
+  const pruned = new Set<string>();
+  for (const id of selectedTabs.value) {
+    if (validIds.has(id)) pruned.add(id);
+  }
+  if (pruned.size !== selectedTabs.value.size) {
+    selectedTabs.value = pruned;
+  }
+});
+
+function toggleTabSelection(tab: TrackedTab, event: MouseEvent) {
+  const newSet = new Set(selectedTabs.value);
+
+  if (event.shiftKey && lastClickedTabId.value) {
+    // Range select
+    const ordered = allVisibleTabsOrdered.value;
+    const lastIdx = ordered.findIndex(t => t.persistentId === lastClickedTabId.value);
+    const curIdx = ordered.findIndex(t => t.persistentId === tab.persistentId);
+    if (lastIdx !== -1 && curIdx !== -1) {
+      const start = Math.min(lastIdx, curIdx);
+      const end = Math.max(lastIdx, curIdx);
+      for (let i = start; i <= end; i++) {
+        newSet.add(ordered[i].persistentId);
+      }
+    }
+  } else if (event.ctrlKey || event.metaKey) {
+    // Toggle single
+    if (newSet.has(tab.persistentId)) {
+      newSet.delete(tab.persistentId);
+    } else {
+      newSet.add(tab.persistentId);
+    }
+  } else {
+    // Plain click on checkbox: toggle
+    if (newSet.has(tab.persistentId)) {
+      newSet.delete(tab.persistentId);
+    } else {
+      newSet.add(tab.persistentId);
+    }
+  }
+
+  selectedTabs.value = newSet;
+  lastClickedTabId.value = tab.persistentId;
+}
+
+function clearSelection() {
+  selectedTabs.value = new Set();
+  lastClickedTabId.value = null;
+}
+
+function toggleSelectAllInWindow(windowPersistentId: string, event: MouseEvent) {
+  event.stopPropagation();
+  const windowTabs = getTabsForWindow(windowPersistentId);
+  const allSelected = windowTabs.every(t => selectedTabs.value.has(t.persistentId));
+  const newSet = new Set(selectedTabs.value);
+
+  if (allSelected) {
+    for (const t of windowTabs) newSet.delete(t.persistentId);
+  } else {
+    for (const t of windowTabs) newSet.add(t.persistentId);
+  }
+
+  selectedTabs.value = newSet;
+}
+
+function isWindowAllSelected(windowPersistentId: string): boolean {
+  const windowTabs = getTabsForWindow(windowPersistentId);
+  return windowTabs.length > 0 && windowTabs.every(t => selectedTabs.value.has(t.persistentId));
+}
+
+function isWindowPartiallySelected(windowPersistentId: string): boolean {
+  const windowTabs = getTabsForWindow(windowPersistentId);
+  const someSelected = windowTabs.some(t => selectedTabs.value.has(t.persistentId));
+  const allSelected = windowTabs.every(t => selectedTabs.value.has(t.persistentId));
+  return someSelected && !allSelected;
+}
+
+// Escape key clears selection
+function onKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && hasSelection.value) {
+    clearSelection();
+  }
+}
+
+onMounted(() => document.addEventListener('keydown', onKeyDown));
+onUnmounted(() => document.removeEventListener('keydown', onKeyDown));
+
+// Bulk actions
+async function bulkCloseTabs() {
+  if (isLoading.value || !hasSelection.value) return;
+  isLoading.value = true;
+  try {
+    const chromeTabIds = selectedTabObjects.value.map(t => t.chromeTabId);
+    await sendMessage({ type: 'BULK_CLOSE_TABS', chromeTabIds });
+    clearSelection();
+    emit('dataChanged');
+  } catch (err) {
+    emit('error', err instanceof Error ? err.message : 'Failed to close tabs');
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+async function bulkMoveToNewWindow() {
+  if (isLoading.value || !hasSelection.value) return;
+  isLoading.value = true;
+  try {
+    const chromeTabIds = selectedTabObjects.value.map(t => t.chromeTabId);
+    await sendMessage({ type: 'BULK_MOVE_TO_NEW_WINDOW', chromeTabIds });
+    clearSelection();
+    emit('dataChanged');
+  } catch (err) {
+    emit('error', err instanceof Error ? err.message : 'Failed to move tabs');
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+async function bulkMoveToWindow(targetWindowId: number) {
+  if (isLoading.value || !hasSelection.value || !targetWindowId) return;
+  isLoading.value = true;
+  try {
+    const chromeTabIds = selectedTabObjects.value.map(t => t.chromeTabId);
+    await sendMessage({ type: 'BULK_MOVE_TO_WINDOW', chromeTabIds, targetWindowId });
+    clearSelection();
+    emit('dataChanged');
+  } catch (err) {
+    emit('error', err instanceof Error ? err.message : 'Failed to move tabs');
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+async function bulkAddTag() {
+  const tag = bulkTagInput.value.trim();
+  if (isLoading.value || !hasSelection.value || !tag) return;
+  isLoading.value = true;
+  try {
+    const persistentIds = selectedTabObjects.value.map(t => t.persistentId);
+    await sendMessage({ type: 'BULK_ADD_TAG', persistentIds, tag });
+    bulkTagInput.value = '';
+    clearSelection();
+    emit('dataChanged');
+  } catch (err) {
+    emit('error', err instanceof Error ? err.message : 'Failed to add tag');
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+function onBulkMoveSelect(event: Event) {
+  const value = (event.target as HTMLSelectElement).value;
+  if (value) {
+    bulkMoveToWindow(Number(value));
+    (event.target as HTMLSelectElement).value = '';
+  }
+}
+
+function updateWindowSearch(windowId: string, query: string) {
+  const newMap = new Map(windowSearch.value);
+  if (query) {
+    newMap.set(windowId, query);
+  } else {
+    newMap.delete(windowId);
+  }
+  windowSearch.value = newMap;
 }
 
 // API helper
@@ -57,25 +242,31 @@ const openWindows = computed(() => {
     .sort((a, b) => b.lastFocusedAt - a.lastFocusedAt);
 });
 
-const filteredTabs = computed(() => {
-  const query = debouncedSearch.value.toLowerCase().trim();
-  if (!query) return props.tabs;
-  return props.tabs.filter(t =>
-    !t.closedAt && (
-      t.title?.toLowerCase().includes(query) ||
-      t.url?.toLowerCase().includes(query)
-    )
-  );
-});
+function getWindowSort(windowId: string): { field: SortField; asc: boolean } {
+  return {
+    field: windowSortBy.value.get(windowId) || 'index',
+    asc: windowSortAsc.value.has(windowId) ? windowSortAsc.value.get(windowId)! : true,
+  };
+}
 
 function getTabsForWindow(windowPersistentId: string) {
-  let windowTabs = filteredTabs.value
+  let windowTabs = props.tabs
     .filter(t => t.windowPersistentId === windowPersistentId && !t.closedAt);
+
+  const query = (windowSearch.value.get(windowPersistentId) || '').toLowerCase().trim();
+  if (query) {
+    windowTabs = windowTabs.filter(t =>
+      t.title?.toLowerCase().includes(query) ||
+      t.url?.toLowerCase().includes(query)
+    );
+  }
+
+  const { field, asc } = getWindowSort(windowPersistentId);
 
   // Sort tabs
   windowTabs = [...windowTabs].sort((a, b) => {
     let cmp = 0;
-    switch (sortBy.value) {
+    switch (field) {
       case 'index':
         cmp = (a.index || 0) - (b.index || 0);
         break;
@@ -92,7 +283,7 @@ function getTabsForWindow(windowPersistentId: string) {
         cmp = b.createdAt - a.createdAt;
         break;
     }
-    return sortAsc.value ? cmp : -cmp;
+    return asc ? cmp : -cmp;
   });
 
   return windowTabs;
@@ -119,12 +310,19 @@ function expandAll() {
   collapsedWindows.value = new Set();
 }
 
-function toggleSort(field: typeof sortBy.value) {
-  if (sortBy.value === field) {
-    sortAsc.value = !sortAsc.value;
+function toggleSort(windowId: string, field: SortField) {
+  const current = getWindowSort(windowId);
+  if (current.field === field) {
+    const newMap = new Map(windowSortAsc.value);
+    newMap.set(windowId, !current.asc);
+    windowSortAsc.value = newMap;
   } else {
-    sortBy.value = field;
-    sortAsc.value = true;
+    const newSortBy = new Map(windowSortBy.value);
+    newSortBy.set(windowId, field);
+    windowSortBy.value = newSortBy;
+    const newAsc = new Map(windowSortAsc.value);
+    newAsc.set(windowId, true);
+    windowSortAsc.value = newAsc;
   }
 }
 
@@ -156,7 +354,7 @@ async function closeTab(tab: TrackedTab, event: Event) {
       type: 'CLOSE_TAB',
       chromeTabId: tab.chromeTabId,
     });
-    emit('tabClosed', tab.persistentId);
+    emit('dataChanged');
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Failed to close tab';
     console.error('Failed to close tab:', err);
@@ -190,40 +388,162 @@ function onDragStart(event: DragEvent, tab: TrackedTab) {
 }
 
 function onDragEnd() {
+  resetDragState();
+}
+
+function resetDragState() {
   draggedTab.value = null;
-  dragOverWindow.value = null;
+  dropTarget.value = null;
 }
 
-function onDragOver(event: DragEvent, windowId: string) {
+function getDropPosition(event: DragEvent): 'before' | 'after' {
+  const el = (event.currentTarget as HTMLElement);
+  const rect = el.getBoundingClientRect();
+  const midY = rect.top + rect.height / 2;
+  return event.clientY < midY ? 'before' : 'after';
+}
+
+function isDropTarget(tabId: string, position: 'before' | 'after'): boolean {
+  return dropTarget.value?.insertBeforeTabId === tabId && dropTarget.value?.position === position;
+}
+
+function onTabDragOver(event: DragEvent, tab: TrackedTab, win: TrackedWindow) {
   event.preventDefault();
-  if (event.dataTransfer) {
-    event.dataTransfer.dropEffect = 'move';
+  event.stopPropagation();
+  if (!draggedTab.value || draggedTab.value.persistentId === tab.persistentId) return;
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  const position = getDropPosition(event);
+  dropTarget.value = { windowPersistentId: win.persistentId, insertBeforeTabId: tab.persistentId, position };
+}
+
+async function onTabDrop(event: DragEvent, tab: TrackedTab, win: TrackedWindow) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (!draggedTab.value || draggedTab.value.persistentId === tab.persistentId) return;
+
+  // Multi-drag: if dragged tab is in selection and multiple selected
+  if (isDraggingMultiple.value) {
+    await performBulkDrop(win);
+    return;
   }
-  dragOverWindow.value = windowId;
+
+  const position = getDropPosition(event);
+  const index = calculateInsertionIndex(draggedTab.value, tab, win, position);
+  await performDrop(draggedTab.value, win, index);
 }
 
-function onDragLeave() {
-  dragOverWindow.value = null;
-}
-
-async function onDrop(event: DragEvent, targetWindow: TrackedWindow) {
+function onContainerDragOver(event: DragEvent, win: TrackedWindow) {
   event.preventDefault();
-  dragOverWindow.value = null;
-
   if (!draggedTab.value) return;
-  if (draggedTab.value.chromeWindowId === targetWindow.chromeWindowId) return;
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  dropTarget.value = { windowPersistentId: win.persistentId, insertBeforeTabId: null, position: 'after' };
+}
 
+async function onContainerDrop(event: DragEvent, win: TrackedWindow) {
+  event.preventDefault();
+  if (!draggedTab.value) return;
+
+  if (isDraggingMultiple.value) {
+    await performBulkDrop(win);
+    return;
+  }
+
+  await performDrop(draggedTab.value, win, -1);
+}
+
+function onWindowHeaderDragOver(event: DragEvent, win: TrackedWindow) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (!draggedTab.value) return;
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  dropTarget.value = { windowPersistentId: win.persistentId, insertBeforeTabId: null, position: 'after' };
+}
+
+async function onWindowHeaderDrop(event: DragEvent, win: TrackedWindow) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (!draggedTab.value) return;
+
+  if (isDraggingMultiple.value) {
+    await performBulkDrop(win);
+    return;
+  }
+
+  await performDrop(draggedTab.value, win, -1);
+}
+
+// Multi-drag support
+const isDraggingMultiple = computed(() => {
+  return draggedTab.value &&
+    selectedTabs.value.has(draggedTab.value.persistentId) &&
+    selectedTabs.value.size > 1;
+});
+
+async function performBulkDrop(targetWindow: TrackedWindow) {
   try {
+    const chromeTabIds = selectedTabObjects.value.map(t => t.chromeTabId);
     await sendMessage({
-      type: 'MOVE_TAB_TO_WINDOW',
-      chromeTabId: draggedTab.value.chromeTabId,
+      type: 'BULK_MOVE_TO_WINDOW',
+      chromeTabIds,
       targetWindowId: targetWindow.chromeWindowId,
     });
+    clearSelection();
+    emit('dataChanged');
   } catch (err) {
-    console.error('Failed to move tab:', err);
+    emit('error', err instanceof Error ? err.message : 'Failed to move tabs');
+  }
+  resetDragState();
+}
+
+function calculateInsertionIndex(dragged: TrackedTab, target: TrackedTab, targetWin: TrackedWindow, position: 'before' | 'after'): number {
+  let rawIndex = position === 'before' ? (target.index || 0) : (target.index || 0) + 1;
+  const sameWindow = dragged.chromeWindowId === targetWin.chromeWindowId;
+  if (sameWindow && (dragged.index || 0) < rawIndex) {
+    rawIndex -= 1;
+  }
+  return Math.max(0, rawIndex);
+}
+
+async function performDrop(tab: TrackedTab, targetWindow: TrackedWindow, index: number) {
+  const sameWindow = tab.chromeWindowId === targetWindow.chromeWindowId;
+
+  // No-op check: same window, same position
+  if (sameWindow && index === (tab.index || 0)) {
+    resetDragState();
+    return;
   }
 
-  draggedTab.value = null;
+  try {
+    if (sameWindow) {
+      await sendMessage({
+        type: 'REORDER_TAB',
+        chromeTabId: tab.chromeTabId,
+        newIndex: index,
+      });
+    } else {
+      await sendMessage({
+        type: 'MOVE_TAB_TO_WINDOW',
+        chromeTabId: tab.chromeTabId,
+        targetWindowId: targetWindow.chromeWindowId,
+        index: index >= 0 ? index : undefined,
+      });
+    }
+    emit('dataChanged');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to move tab';
+    console.error('Failed to move tab:', err);
+    emit('error', message);
+  }
+
+  resetDragState();
+}
+
+function isContainerDropEnd(win: TrackedWindow): boolean {
+  return dropTarget.value?.windowPersistentId === win.persistentId && dropTarget.value?.insertBeforeTabId === null;
+}
+
+function isWindowHeaderDragTarget(win: TrackedWindow): boolean {
+  return !!draggedTab.value && dropTarget.value?.windowPersistentId === win.persistentId && collapsedWindows.value.has(win.persistentId);
 }
 
 function formatTime(ms: number) {
@@ -246,17 +566,11 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 </script>
 
 <template>
-  <div class="all-windows-view">
+  <div class="all-windows-view" :class="{ 'has-selection': hasSelection }">
     <!-- Toolbar -->
     <div class="toolbar">
       <div class="toolbar-left">
-        <input
-          :value="searchQuery"
-          @input="updateSearch(($event.target as HTMLInputElement).value)"
-          type="text"
-          class="search-input"
-          placeholder="Search tabs..."
-        />
+        <span class="stats-inline">{{ openWindows.length }} win / {{ totalTabs }} tabs</span>
       </div>
       <div class="toolbar-right">
         <button
@@ -272,65 +586,90 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
       </div>
     </div>
 
-    <!-- Sort buttons -->
-    <div class="sort-bar">
-      <span class="sort-label">Sort:</span>
-      <button
-        v-for="s in (['index', 'title', 'url', 'time', 'created'] as const)"
-        :key="s"
-        class="sort-btn"
-        :class="{ active: sortBy === s }"
-        @click="toggleSort(s)"
-      >
-        {{ s === 'index' ? '#' : s === 'time' ? 'Active' : s.charAt(0).toUpperCase() + s.slice(1) }}
-        <span v-if="sortBy === s" class="sort-dir">{{ sortAsc ? '↑' : '↓' }}</span>
-      </button>
-    </div>
-
-    <!-- Stats -->
-    <div class="stats-row">
-      <span>{{ openWindows.length }} windows</span>
-      <span>{{ totalTabs }} tabs</span>
-      <span v-if="searchQuery">{{ filteredTabs.filter(t => !t.closedAt).length }} matching</span>
-    </div>
-
     <!-- Windows list -->
     <div class="windows-container">
       <div
         v-for="win in openWindows"
         :key="win.persistentId"
         class="window-section"
-        :class="{ 'drag-over': dragOverWindow === win.persistentId }"
-        @dragover="onDragOver($event, win.persistentId)"
-        @dragleave="onDragLeave"
-        @drop="onDrop($event, win)"
       >
         <!-- Window header -->
-        <div class="window-header" @click="toggleWindow(win.persistentId)">
+        <div
+          class="window-header"
+          :class="{ 'drag-target': isWindowHeaderDragTarget(win) }"
+          @click="toggleWindow(win.persistentId)"
+          @dragover="onWindowHeaderDragOver($event, win)"
+          @drop="onWindowHeaderDrop($event, win)"
+        >
           <span class="collapse-icon">{{ collapsedWindows.has(win.persistentId) ? '&#9654;' : '&#9660;' }}</span>
+          <input
+            type="checkbox"
+            class="window-select-all"
+            :checked="isWindowAllSelected(win.persistentId)"
+            :indeterminate="isWindowPartiallySelected(win.persistentId)"
+            @click="toggleSelectAllInWindow(win.persistentId, $event)"
+            @dblclick.stop
+            title="Select all tabs in this window"
+          />
           <span class="window-id">Window {{ openWindows.indexOf(win) + 1 }}</span>
           <span class="window-chrome-id">({{ win.chromeWindowId }})</span>
           <span class="window-count">{{ getWindowTabCount(win.persistentId) }} tabs</span>
           <button class="window-btn" @click.stop="focusWindow(win)" title="Focus window">&#8599;</button>
           <span v-if="win.incognito" class="incognito-badge">incog</span>
+          <input
+            type="text"
+            class="window-search"
+            :value="windowSearch.get(win.persistentId) || ''"
+            @input.stop="updateWindowSearch(win.persistentId, ($event.target as HTMLInputElement).value)"
+            @click.stop
+            placeholder="Search..."
+          />
+          <span class="window-sort">
+            <button
+              v-for="s in (['index', 'title', 'url', 'time', 'created'] as const)"
+              :key="s"
+              class="wsort-btn"
+              :class="{ active: getWindowSort(win.persistentId).field === s }"
+              @click.stop="toggleSort(win.persistentId, s)"
+            >
+              {{ s === 'index' ? '#' : s === 'time' ? 'Act' : s === 'created' ? 'New' : s.charAt(0).toUpperCase() + s.slice(1) }}
+              <span v-if="getWindowSort(win.persistentId).field === s" class="wsort-dir">{{ getWindowSort(win.persistentId).asc ? '↑' : '↓' }}</span>
+            </button>
+          </span>
         </div>
 
         <!-- Tabs grid/list -->
         <div
           v-if="!collapsedWindows.has(win.persistentId)"
           class="tabs-container"
-          :class="{ compact: showCompact }"
+          :class="{ compact: showCompact, 'drop-end': isContainerDropEnd(win) }"
+          @dragover="onContainerDragOver($event, win)"
+          @drop="onContainerDrop($event, win)"
         >
           <div
             v-for="tab in getTabsForWindow(win.persistentId)"
             :key="tab.persistentId"
             class="tab-row"
-            :class="{ dragging: draggedTab?.persistentId === tab.persistentId }"
+            :class="{
+              dragging: draggedTab?.persistentId === tab.persistentId,
+              'drop-above': isDropTarget(tab.persistentId, 'before'),
+              'drop-below': isDropTarget(tab.persistentId, 'after'),
+              selected: selectedTabs.has(tab.persistentId),
+            }"
             draggable="true"
             @dragstart="onDragStart($event, tab)"
             @dragend="onDragEnd"
+            @dragover="onTabDragOver($event, tab, win)"
+            @drop="onTabDrop($event, tab, win)"
             @dblclick="switchToTab(tab)"
           >
+            <input
+              type="checkbox"
+              class="tab-checkbox"
+              :checked="selectedTabs.has(tab.persistentId)"
+              @click.stop="toggleTabSelection(tab, $event)"
+              @dblclick.stop
+            />
             <span class="tab-idx">{{ tab.index + 1 }}</span>
             <img
               v-if="tab.faviconUrl"
@@ -350,7 +689,7 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
           </div>
 
           <div v-if="getTabsForWindow(win.persistentId).length === 0" class="empty-tabs">
-            {{ searchQuery ? 'No matching tabs' : 'No tabs' }}
+            {{ windowSearch.get(win.persistentId) ? 'No matching tabs' : 'No tabs' }}
           </div>
         </div>
       </div>
@@ -359,6 +698,35 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
         No windows tracked
       </div>
     </div>
+
+    <!-- Floating bulk action bar -->
+    <Transition name="slide-up">
+      <div v-if="hasSelection" class="bulk-action-bar">
+        <span class="bulk-count">{{ selectedCount }} selected</span>
+        <button class="bulk-btn" @click="clearSelection" title="Clear selection">Clear</button>
+        <span class="bulk-separator"></span>
+        <input
+          type="text"
+          class="bulk-tag-input"
+          v-model="bulkTagInput"
+          placeholder="Tag..."
+          @keydown.enter="bulkAddTag"
+        />
+        <button class="bulk-btn accent" @click="bulkAddTag" :disabled="!bulkTagInput.trim()" title="Add tag to selected tabs">Tag</button>
+        <span class="bulk-separator"></span>
+        <button class="bulk-btn accent" @click="bulkMoveToNewWindow" title="Move selected tabs to a new window">New Window</button>
+        <select class="bulk-window-select" @change="onBulkMoveSelect" title="Move selected tabs to an existing window">
+          <option value="">Move to...</option>
+          <option
+            v-for="win in openWindows"
+            :key="win.persistentId"
+            :value="win.chromeWindowId"
+          >Window {{ openWindows.indexOf(win) + 1 }} ({{ getWindowTabCount(win.persistentId) }})</option>
+        </select>
+        <span class="bulk-separator"></span>
+        <button class="bulk-btn danger" @click="bulkCloseTabs" title="Close all selected tabs">Close {{ selectedCount }}</button>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -382,26 +750,14 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 }
 
 .toolbar-left {
-  flex: 1;
+  display: flex;
+  align-items: center;
 }
 
-.search-input {
-  width: 100%;
-  background: var(--bg-page);
-  border: 1px solid var(--border-light);
-  border-radius: 4px;
-  padding: 4px 8px;
-  font-size: 12px;
-  color: var(--text-primary);
-  outline: none;
-}
-
-.search-input:focus {
-  border-color: var(--accent-green);
-}
-
-.search-input::placeholder {
+.stats-inline {
+  font-size: 10px;
   color: var(--text-muted);
+  font-family: var(--font-mono);
 }
 
 .toolbar-right {
@@ -431,56 +787,6 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
   border-color: var(--accent-green);
 }
 
-.sort-bar {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 12px;
-  border-bottom: 1px solid var(--border-light);
-  flex-wrap: wrap;
-}
-
-.sort-label {
-  font-size: 10px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-}
-
-.sort-btn {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 3px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.sort-btn:hover {
-  color: var(--text-primary);
-  background: var(--bg-alt);
-}
-
-.sort-btn.active {
-  color: var(--accent-green);
-  background: rgba(5, 150, 105, 0.08);
-}
-
-.sort-dir {
-  margin-left: 2px;
-  font-size: 9px;
-}
-
-.stats-row {
-  display: flex;
-  gap: 12px;
-  padding: 3px 12px;
-  font-size: 10px;
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--border-light);
-}
-
 .windows-container {
   flex: 1;
   overflow-y: auto;
@@ -489,10 +795,6 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 
 .window-section {
   border-bottom: 1px solid var(--border-light);
-}
-
-.window-section.drag-over {
-  background: rgba(5, 150, 105, 0.06);
 }
 
 .window-header {
@@ -560,6 +862,60 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
   border-color: var(--accent-green);
 }
 
+.window-search {
+  width: 90px;
+  background: var(--bg-page);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--text-primary);
+  outline: none;
+  transition: width 0.15s, border-color 0.15s;
+}
+
+.window-search:focus {
+  border-color: var(--accent-green);
+  width: 130px;
+}
+
+.window-search::placeholder {
+  color: var(--text-muted);
+}
+
+.window-sort {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.wsort-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.15s;
+  line-height: 1.2;
+}
+
+.wsort-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-page);
+}
+
+.wsort-btn.active {
+  color: var(--accent-green);
+  font-weight: 600;
+}
+
+.wsort-dir {
+  font-size: 8px;
+  margin-left: 1px;
+}
+
 .tabs-container {
   display: flex;
   flex-direction: column;
@@ -573,14 +929,103 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
   cursor: pointer;
   transition: background 0.1s;
   min-height: 26px;
+  position: relative;
 }
 
 .tab-row:hover {
   background: var(--bg-alt);
 }
 
+.tab-row.selected {
+  background: rgba(5, 150, 105, 0.08);
+}
+
+.tab-row.selected:hover {
+  background: rgba(5, 150, 105, 0.13);
+}
+
 .tab-row.dragging {
   opacity: 0.5;
+}
+
+.tab-row.drop-above::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 12px;
+  right: 12px;
+  height: 2px;
+  background: var(--accent-green);
+  border-radius: 1px;
+  z-index: 1;
+}
+
+.tab-row.drop-below::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 12px;
+  right: 12px;
+  height: 2px;
+  background: var(--accent-green);
+  border-radius: 1px;
+  z-index: 1;
+}
+
+.tabs-container.drop-end::after {
+  content: '';
+  display: block;
+  height: 2px;
+  margin: 0 12px;
+  background: var(--accent-green);
+  border-radius: 1px;
+}
+
+.window-header.drag-target {
+  outline: 2px dashed var(--accent-green);
+  outline-offset: -2px;
+}
+
+/* Checkboxes */
+.tab-checkbox {
+  opacity: 0;
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  cursor: pointer;
+  margin: 0;
+  transition: opacity 0.1s;
+  accent-color: var(--accent-green);
+}
+
+.tab-row:hover .tab-checkbox,
+.has-selection .tab-checkbox {
+  opacity: 1;
+}
+
+.tab-checkbox:checked {
+  opacity: 1;
+}
+
+.window-select-all {
+  opacity: 0;
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  cursor: pointer;
+  margin: 0;
+  transition: opacity 0.1s;
+  accent-color: var(--accent-green);
+}
+
+.window-header:hover .window-select-all,
+.has-selection .window-select-all {
+  opacity: 1;
+}
+
+.window-select-all:checked,
+.window-select-all:indeterminate {
+  opacity: 1;
 }
 
 .tab-idx {
@@ -655,14 +1100,22 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 
 .tab-close {
   opacity: 0;
-  background: none;
+  background: #F3F4F6;
   border: none;
-  color: var(--text-muted);
-  font-size: 14px;
-  padding: 0 4px;
+  color: var(--accent-red);
+  font-size: 13px;
+  font-weight: 700;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 3px;
   cursor: pointer;
   transition: all 0.1s;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 
 .tab-row:hover .tab-close {
@@ -670,7 +1123,8 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 }
 
 .tab-close:hover {
-  color: var(--accent-red);
+  background: #E5E7EB;
+  color: #DC2626;
 }
 
 .tabs-container.compact .tab-row {
@@ -701,6 +1155,124 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
   height: 100%;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+/* Bulk action bar */
+.bulk-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg-header, #2A3328);
+  border-top: 2px solid var(--accent-green);
+  flex-shrink: 0;
+}
+
+.bulk-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.bulk-separator {
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.15);
+  flex-shrink: 0;
+}
+
+.bulk-btn {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.85);
+  padding: 3px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 10px;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+
+.bulk-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+.bulk-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.bulk-btn.accent {
+  background: rgba(5, 150, 105, 0.3);
+  border-color: rgba(5, 150, 105, 0.5);
+  color: #6ee7b7;
+}
+
+.bulk-btn.accent:hover {
+  background: rgba(5, 150, 105, 0.5);
+  color: #a7f3d0;
+}
+
+.bulk-btn.danger {
+  background: rgba(220, 38, 38, 0.3);
+  border-color: rgba(220, 38, 38, 0.5);
+  color: #fca5a5;
+}
+
+.bulk-btn.danger:hover {
+  background: rgba(220, 38, 38, 0.5);
+  color: #fecaca;
+}
+
+.bulk-tag-input {
+  width: 60px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 10px;
+  color: #fff;
+  outline: none;
+}
+
+.bulk-tag-input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.bulk-tag-input:focus {
+  border-color: var(--accent-green);
+}
+
+.bulk-window-select {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+  padding: 3px 4px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.85);
+  outline: none;
+  cursor: pointer;
+  max-width: 100px;
+}
+
+.bulk-window-select option {
+  background: #2A3328;
+  color: #fff;
+}
+
+/* Slide-up transition */
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.slide-up-enter-from,
+.slide-up-leave-to {
+  transform: translateY(100%);
+  opacity: 0;
 }
 
 /* Scrollbar */

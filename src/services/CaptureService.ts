@@ -57,8 +57,7 @@ interface CaptureFrame {
 }
 
 interface StitchResult {
-  blobUrl: string;
-  jsonBlobUrl: string;
+  dataUrl: string;
   filename: string;
 }
 
@@ -215,8 +214,8 @@ export class CaptureService {
     return new Promise((resolve, reject) => {
       chrome.downloads.download(
         {
-          url: result.blobUrl,
-          filename: 'unos/' + result.filename + '.png',
+          url: result.dataUrl,
+          filename: result.filename + '.png',
           saveAs: false,
         },
         (pngId) => {
@@ -224,20 +223,7 @@ export class CaptureService {
             reject(new Error(chrome.runtime.lastError.message));
             return;
           }
-          chrome.downloads.download(
-            {
-              url: result.jsonBlobUrl,
-              filename: 'unos/' + result.filename + '.json',
-              saveAs: false,
-            },
-            (jsonId) => {
-              if (chrome.runtime.lastError) {
-                reject(new Error(chrome.runtime.lastError.message));
-                return;
-              }
-              resolve();
-            },
-          );
+          resolve();
         },
       );
     });

@@ -291,6 +291,81 @@ export interface ExportData {
   tags?: Tag[];
 }
 
+// ============================================
+// X/Twitter Bookmark Types
+// ============================================
+
+/**
+ * X/Twitter bookmark entity - synced from x.com/i/bookmarks
+ */
+export interface XBookmark {
+  /** Auto-increment primary key */
+  id?: number;
+  /** Unique tweet ID extracted from /status/{id} */
+  tweetId: string;
+  /** Author @username */
+  authorHandle: string;
+  /** Author display name */
+  authorName: string;
+  /** Full tweet text content */
+  text: string;
+  /** ISO 8601 timestamp from the tweet */
+  timestamp: string;
+  /** Full tweet URL: https://x.com/{handle}/status/{id} */
+  tweetUrl: string;
+  /** Image URLs from the tweet */
+  mediaUrls: string[];
+  /** Whether tweet contains a video */
+  hasVideo: boolean;
+  /** Whether tweet is a quote tweet */
+  isQuoteTweet: boolean;
+  /** Unix timestamp (ms) when first synced */
+  firstSeenAt: number;
+  /** Unix timestamp (ms) of most recent sync encounter */
+  lastSeenAt: number;
+  /** Categories for future AI integration */
+  categories: string[];
+  /** User-defined tags */
+  tags: string[];
+  /** User notes */
+  notes: string;
+  /** Soft delete flag */
+  archived: boolean;
+}
+
+/**
+ * X bookmark sync state - single-row config table (id=1)
+ */
+export interface XSyncState {
+  /** Always 1 - single-row config */
+  id?: number;
+  /** Unix timestamp (ms) of last sync */
+  lastSyncAt: number;
+  /** Total bookmarks in database */
+  totalBookmarks: number;
+  /** New bookmarks found in last sync */
+  lastSyncNewCount: number;
+  /** Duration of last sync in ms */
+  lastSyncDurationMs: number;
+  /** Total number of syncs performed */
+  syncCount: number;
+}
+
+/**
+ * Raw tweet data extracted from DOM by the content script
+ */
+export interface RawTweetData {
+  tweetId: string;
+  authorHandle: string;
+  authorName: string;
+  text: string;
+  timestamp: string;
+  tweetUrl: string;
+  mediaUrls: string[];
+  hasVideo: boolean;
+  isQuoteTweet: boolean;
+}
+
 /**
  * CSV row format for tab export
  */

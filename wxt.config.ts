@@ -6,7 +6,7 @@ export default defineConfig({
     name: 'UNOS Web Extension',
     description: 'Track tab usage, relationships, and metadata',
     version: '0.0.1',
-    permissions: ['tabs', 'storage', 'alarms', 'downloads', 'scripting', 'offscreen'],
+    permissions: ['tabs', 'storage', 'alarms', 'downloads', 'scripting', 'offscreen', 'system.memory', 'cookies', 'nativeMessaging'],
     host_permissions: ['<all_urls>'],
   },
 });

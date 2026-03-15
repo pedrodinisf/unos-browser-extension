@@ -7,6 +7,8 @@ import type {
   Session,
   TabRelationship,
   Tag,
+  XBookmark,
+  XSyncState,
 } from './types';
 
 /**
@@ -25,6 +27,8 @@ export class TabTrackerDatabase extends Dexie {
   sessions!: Table<Session, string>;
   tabRelationships!: Table<TabRelationship, number>;
   tags!: Table<Tag, number>;
+  xBookmarks!: Table<XBookmark, number>;
+  xSyncState!: Table<XSyncState, number>;
 
   constructor() {
     super('TabTrackerDB');
@@ -135,6 +139,98 @@ export class TabTrackerDatabase extends Dexie {
         ++id,
         &name,
         usageCount
+      `.replace(/\s+/g, ''),
+    });
+
+    // Schema version 2 — adds X/Twitter bookmark tables
+    this.version(2).stores({
+      // All existing tables re-declared with identical indexes
+      tabs: `
+        ++id,
+        &persistentId,
+        chromeTabId,
+        chromeWindowId,
+        urlHash,
+        sessionId,
+        createdAt,
+        lastActivatedAt,
+        isSaved,
+        closedAt,
+        [sessionId+chromeWindowId],
+        [urlHash+sessionId],
+        *tags
+      `.replace(/\s+/g, ''),
+
+      tabVisits: `
+        ++id,
+        tabPersistentId,
+        sessionId,
+        urlHash,
+        activatedAt,
+        [tabPersistentId+activatedAt],
+        [sessionId+activatedAt]
+      `.replace(/\s+/g, ''),
+
+      windows: `
+        ++id,
+        &persistentId,
+        chromeWindowId,
+        sessionId,
+        incognito,
+        createdAt,
+        closedAt,
+        [sessionId+incognito]
+      `.replace(/\s+/g, ''),
+
+      windowFocusEvents: `
+        ++id,
+        windowPersistentId,
+        sessionId,
+        focusedAt
+      `.replace(/\s+/g, ''),
+
+      sessions: `
+        id,
+        isActive,
+        isSaved,
+        startedAt,
+        expiresAt,
+        *tags
+      `.replace(/\s+/g, ''),
+
+      tabRelationships: `
+        ++id,
+        sourceTabPersistentId,
+        targetTabPersistentId,
+        relationshipType,
+        [sourceTabPersistentId+relationshipType],
+        [targetTabPersistentId+relationshipType]
+      `.replace(/\s+/g, ''),
+
+      tags: `
+        ++id,
+        &name,
+        usageCount
+      `.replace(/\s+/g, ''),
+
+      // NEW: X/Twitter bookmark storage
+      // - &tweetId: unique lookup for dedup
+      // - timestamp: sort by tweet date
+      // - authorHandle: filter by author
+      // - *tags: multi-entry for tag filtering
+      // - archived: filter active vs archived
+      xBookmarks: `
+        ++id,
+        &tweetId,
+        timestamp,
+        authorHandle,
+        *tags,
+        archived
+      `.replace(/\s+/g, ''),
+
+      // NEW: Single-row sync state config
+      xSyncState: `
+        ++id
       `.replace(/\s+/g, ''),
     });
   }

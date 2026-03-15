@@ -8,6 +8,8 @@ import { getWindowTracker } from '../src/services/WindowTracker';
 import { getRelationshipManager } from '../src/services/RelationshipManager';
 import { getInitializationService } from '../src/services/InitializationService';
 import { getCaptureService } from '../src/services/CaptureService';
+import { getXBookmarkService } from '../src/services/XBookmarkService';
+import { getVideoDownloadService } from '../src/services/VideoDownloadService';
 import { TIMING, ALARM_NAMES } from '../src/constants';
 
 export default defineBackground(() => {
@@ -37,6 +39,11 @@ export default defineBackground(() => {
     chrome.storage.local.set({ recentEvents: recentEvents.slice(0, 10) }).catch(console.error);
   }
 
+  // Notify popup (if open) that data changed so it can refresh
+  function broadcastDataChanged() {
+    chrome.runtime.sendMessage({ type: 'DATA_CHANGED' }).catch(() => {});
+  }
+
   // ============================================
   // TAB EVENTS - Register synchronously
   // ============================================
@@ -64,12 +71,13 @@ export default defineBackground(() => {
           );
         }
       }
+      broadcastDataChanged();
     }).catch(console.error);
   });
 
   chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
     console.log('[UNOS] Tab removed:', tabId);
-    tabTracker.handleTabRemoved(tabId, removeInfo).catch(console.error);
+    tabTracker.handleTabRemoved(tabId, removeInfo).then(() => broadcastDataChanged()).catch(console.error);
   });
 
   chrome.tabs.onActivated.addListener((activeInfo) => {
@@ -86,15 +94,15 @@ export default defineBackground(() => {
   });
 
   chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
-    tabTracker.handleTabMoved(tabId, moveInfo).catch(console.error);
+    tabTracker.handleTabMoved(tabId, moveInfo).then(() => broadcastDataChanged()).catch(console.error);
   });
 
   chrome.tabs.onAttached.addListener((tabId, attachInfo) => {
-    tabTracker.handleTabAttached(tabId, attachInfo).catch(console.error);
+    tabTracker.handleTabAttached(tabId, attachInfo).then(() => broadcastDataChanged()).catch(console.error);
   });
 
   chrome.tabs.onDetached.addListener((tabId, detachInfo) => {
-    tabTracker.handleTabDetached(tabId, detachInfo).catch(console.error);
+    tabTracker.handleTabDetached(tabId, detachInfo).then(() => broadcastDataChanged()).catch(console.error);
   });
 
   // ============================================
@@ -103,12 +111,12 @@ export default defineBackground(() => {
 
   chrome.windows.onCreated.addListener((window) => {
     console.log('[UNOS] Window created:', window.id);
-    windowTracker.handleWindowCreated(window).catch(console.error);
+    windowTracker.handleWindowCreated(window).then(() => broadcastDataChanged()).catch(console.error);
   });
 
   chrome.windows.onRemoved.addListener((windowId) => {
     console.log('[UNOS] Window removed:', windowId);
-    windowTracker.handleWindowRemoved(windowId).catch(console.error);
+    windowTracker.handleWindowRemoved(windowId).then(() => broadcastDataChanged()).catch(console.error);
   });
 
   chrome.windows.onFocusChanged.addListener((windowId) => {
@@ -396,6 +404,141 @@ export default defineBackground(() => {
             // Chrome would time it out with a spurious error.
             const captureService = getCaptureService();
             captureService.startCapture(message.options || {}).catch(console.error);
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'BULK_CLOSE_TABS': {
+            const { chromeTabIds } = message as { chromeTabIds: number[] };
+            await chrome.tabs.remove(chromeTabIds);
+            broadcastDataChanged();
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'BULK_MOVE_TO_WINDOW': {
+            const { chromeTabIds, targetWindowId } = message as { chromeTabIds: number[]; targetWindowId: number };
+            await chrome.tabs.move(chromeTabIds, { windowId: targetWindowId, index: -1 });
+            broadcastDataChanged();
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'BULK_MOVE_TO_NEW_WINDOW': {
+            const { chromeTabIds } = message as { chromeTabIds: number[] };
+            if (chromeTabIds.length > 0) {
+              const newWindow = await chrome.windows.create({ tabId: chromeTabIds[0] });
+              if (chromeTabIds.length > 1 && newWindow.id) {
+                await chrome.tabs.move(chromeTabIds.slice(1), { windowId: newWindow.id, index: -1 });
+              }
+            }
+            broadcastDataChanged();
+            sendResponse({ success: true });
+            break;
+          }
+
+          // ============================================
+          // X BOOKMARK HANDLERS
+          // ============================================
+
+          case 'X_SYNC_BOOKMARKS': {
+            // Fire-and-forget: sync is long-running, progress via chrome.storage.local
+            const xService = getXBookmarkService();
+            xService.syncBookmarks(message.options || {}).catch(console.error);
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'X_GET_BOOKMARKS': {
+            const xService = getXBookmarkService();
+            const bookmarks = await xService.getBookmarks({
+              includeArchived: message.includeArchived,
+              page: message.page,
+              limit: message.limit,
+              search: message.search,
+              sortBy: message.sortBy,
+              sortOrder: message.sortOrder,
+              filters: message.filters,
+            });
+            const totalCount = await xService.getBookmarkCount({
+              includeArchived: message.includeArchived,
+              search: message.search,
+              filters: message.filters,
+            });
+            sendResponse({ success: true, data: { bookmarks, totalCount } });
+            break;
+          }
+
+          case 'X_GET_SYNC_STATE': {
+            const xService = getXBookmarkService();
+            const syncState = await xService.getSyncState();
+            sendResponse({ success: true, data: syncState });
+            break;
+          }
+
+          case 'X_ARCHIVE_BOOKMARK': {
+            const xService = getXBookmarkService();
+            await xService.archiveBookmark(message.tweetId);
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'X_UNARCHIVE_BOOKMARK': {
+            const xService = getXBookmarkService();
+            await xService.unarchiveBookmark(message.tweetId);
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'X_UPDATE_BOOKMARK_META': {
+            const xService = getXBookmarkService();
+            await xService.updateBookmarkMeta(message.tweetId, {
+              tags: message.tags,
+              notes: message.notes,
+              categories: message.categories,
+            });
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'X_EXPORT_BOOKMARKS': {
+            const xService = getXBookmarkService();
+            const exportResult = message.format === 'markdown'
+              ? await xService.exportAsMarkdown()
+              : await xService.exportAsJSON();
+            sendResponse({ success: true, data: exportResult });
+            break;
+          }
+
+          case 'X_DOWNLOAD_VIDEO': {
+            // Fire-and-forget: download is long-running, progress via chrome.storage.local
+            const videoService = getVideoDownloadService();
+            videoService.downloadVideo(message.tweetUrl).catch(console.error);
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'X_CLEAR_DOWNLOAD_STATUS': {
+            const videoService = getVideoDownloadService();
+            await videoService.clearDownloadStatus();
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'BULK_ADD_TAG': {
+            const { persistentIds, tag } = message as { persistentIds: string[]; tag: string };
+            const db = storageManager.getDB();
+            await db.transaction('rw', db.tabs, async () => {
+              for (const pid of persistentIds) {
+                const tab = await db.tabs.where('persistentId').equals(pid).first();
+                if (tab && !tab.tags.includes(tag)) {
+                  await db.tabs.where('persistentId').equals(pid).modify((t: any) => {
+                    t.tags = [...(t.tags || []), tag];
+                  });
+                }
+              }
+            });
+            broadcastDataChanged();
             sendResponse({ success: true });
             break;
           }

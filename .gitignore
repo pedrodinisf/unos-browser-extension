@@ -11,6 +11,10 @@ dist/
 .env.local
 .env.*.local
 
+# Native host
+native-host/.venv/
+__pycache__/
+
 # IDE
 .idea/
 .vscode/

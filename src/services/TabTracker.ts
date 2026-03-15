@@ -367,10 +367,13 @@ export class TabTracker {
     const db = getDatabase();
     const now = Date.now();
 
-    await db.tabs.where('persistentId').equals(persistentId).modify({
-      chromeWindowId: attachInfo.newWindowId,
-      index: attachInfo.newPosition,
-      updatedAt: now,
+    await db.tabs.where('persistentId').equals(persistentId).modify((tab) => {
+      tab.chromeWindowId = attachInfo.newWindowId;
+      tab.index = attachInfo.newPosition;
+      tab.updatedAt = now;
+      if (newWindowPersistentId) {
+        tab.windowPersistentId = newWindowPersistentId;
+      }
     });
 
     // Update window tab counts

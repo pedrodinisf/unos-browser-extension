@@ -132,6 +132,50 @@ Chrome assigns ephemeral numeric IDs (tab.id, window.id) that change on restart.
 - Runs in popup context, fetches data via `GET_ALL_DATA` message
 - Methods: `exportAndDownloadJSON()`, `exportAndDownloadCSV()`, `exportAndDownloadZIP()`
 
+**CaptureService** (`src/services/CaptureService.ts`)
+- Orchestrates full-page scroll screenshots
+- Injects `captureEngine.js` into the target tab for scroll control
+- Captures each viewport frame via `chrome.tabs.captureVisibleTab`
+- Sends frames to an offscreen document (`public/offscreen.js`) for stitching
+- Offscreen document uses `OffscreenCanvas` to stitch frames, returns a data URL
+- Downloads the final PNG to the user's Downloads folder (`saveAs: false`)
+- Progress tracked via `chrome.storage.local` (capture_status, capture_progress)
+- Triggered by `START_CAPTURE` message from popup
+
+**URL Grepper** (`entrypoints/url-grepper.content.ts` + `UrlGrepperDialog.vue`)
+- Content script extracts all `<a href>` URLs from the active page
+- Popup UI toggles collection on/off, applies regex filter
+- Copy to clipboard or download as `.txt`
+- State persisted in `chrome.storage.local` (urlGrepper_* keys)
+
+**XBookmarkService** (`src/services/XBookmarkService.ts`)
+- Syncs X/Twitter bookmarks from `x.com/i/bookmarks` page
+- Orchestrates incremental sync loop: extract → check known → scroll → repeat
+- Stops after 5 consecutive known bookmarks (incremental) or 3 unchanged scroll heights (bottom)
+- Merges into Dexie: preserves `firstSeenAt`, user metadata (tags, notes, categories)
+- CRUD: `getBookmarks()`, `archiveBookmark()`, `updateBookmarkMeta()`, `getSyncState()`
+- Export: `exportAsJSON()`, `exportAsMarkdown()` (grouped by month)
+- Progress tracked via `chrome.storage.local` (xBookmarks_syncStatus, xBookmarks_syncNewCount)
+- Triggered by `X_SYNC_BOOKMARKS` message from popup (fire-and-forget pattern)
+
+**X Bookmarks Content Script** (`entrypoints/x-bookmarks-sync.content.ts`)
+- Runs only on `x.com/i/bookmarks` and `twitter.com/i/bookmarks`
+- Responds to messages from background (target: `x-bookmarks-sync`):
+  - `EXTRACT_TWEETS` — query all `article[data-testid="tweet"]`, parse via data-testid selectors
+  - `SCROLL_DOWN` — scroll to bottom, return new page height
+  - `GET_PAGE_INFO` — return scroll position and viewport info
+  - `GET_VIDEO_URL` — extract `<video src>` for a specific tweet
+- Does NOT auto-run — purely message-driven
+
+**VideoDownloadService** (`src/services/VideoDownloadService.ts`)
+- Downloads X/Twitter videos via Chrome Native Messaging + yt-dlp
+- Gets auth cookies via `chrome.cookies.getAll({ domain: '.x.com' })`
+- Sends cookies + tweet URL to `com.unos.video_downloader` native host
+- Native host runs yt-dlp as subprocess, returns file path
+- Progress tracked via `chrome.storage.local` (xBookmarks_downloadStatus, etc.)
+- Translates native messaging errors into actionable user messages
+- Requires one-time setup: `cd native-host && ./install.sh`
+
 ### 5. Database Schema (Dexie)
 
 Key indexes for performance:
@@ -151,6 +195,16 @@ Key indexes for performance:
 - Primary key is UUID string (not auto-increment)
 - `isActive` - find current session
 - `expiresAt` - cleanup query
+
+**xBookmarks** table (schema version 2):
+- `&tweetId` - unique lookup for dedup
+- `timestamp` - sort by tweet date
+- `authorHandle` - filter by author
+- `*tags` - multi-entry for tag filtering
+- `archived` - filter active vs archived
+
+**xSyncState** table (schema version 2):
+- `++id` - single-row config table (always id=1)
 
 **Compound indexes are critical** for performance. Always query using indexed fields when possible.
 
@@ -229,6 +283,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 - `UPDATE_TAB_METADATA` - Update tags/notes (params: `persistentId`, `tags`, `notes`)
 - `SAVE_TAB` - Mark tab as saved (params: `persistentId`)
 
+*Bulk Actions:*
+- `BULK_CLOSE_TABS` - Close multiple tabs (params: `chromeTabIds: number[]`)
+- `BULK_MOVE_TO_WINDOW` - Move multiple tabs to existing window (params: `chromeTabIds: number[]`, `targetWindowId: number`)
+- `BULK_MOVE_TO_NEW_WINDOW` - Move multiple tabs to a new window (params: `chromeTabIds: number[]`)
+- `BULK_ADD_TAG` - Add a tag to multiple tabs (params: `persistentIds: string[]`, `tag: string`)
+
+*Tools:*
+- `START_CAPTURE` - Begin scroll screenshot (params: `options: { delay }`)
+
+*X Bookmarks:*
+- `X_SYNC_BOOKMARKS` - Start bookmark sync (fire-and-forget; params: `options: { fullSync?: boolean }`)
+- `X_GET_BOOKMARKS` - Get paginated bookmarks (params: `includeArchived, page, limit, search`)
+- `X_GET_SYNC_STATE` - Get sync stats (returns `XSyncState | null`)
+- `X_ARCHIVE_BOOKMARK` / `X_UNARCHIVE_BOOKMARK` - Soft delete/restore (params: `tweetId`)
+- `X_UPDATE_BOOKMARK_META` - Update tags/notes/categories (params: `tweetId, tags, notes, categories`)
+- `X_EXPORT_BOOKMARKS` - Export data (params: `format: 'json' | 'markdown'`)
+- `X_DOWNLOAD_VIDEO` - Download video via native host (fire-and-forget; params: `tweetUrl`)
+- `X_CLEAR_DOWNLOAD_STATUS` - Reset download state to idle
+
 *Debugging:*
 - `PING` - Health check (returns `{ pong: true, timestamp }`)
 - `GET_DEBUG_STATS` - Get initialization status and DB counts
@@ -304,6 +377,13 @@ storageManager.workingState.currentSessionId = newId;
 **Entry points**:
 - `entrypoints/background.ts` - Service worker (event handling)
 - `entrypoints/popup/` - Extension popup UI (Vue 3)
+- `entrypoints/x-bookmarks-sync.content.ts` - Content script for X bookmark DOM extraction
+
+**Native host** (`native-host/`):
+- `unos_video_host.py` - Python native messaging host for video download via yt-dlp
+- `install.sh` - macOS installer (creates .venv, registers with Chrome)
+- `requirements.txt` - Python dependencies (yt-dlp)
+- `.venv/` - Local virtual environment (created by install.sh, gitignored)
 
 **Core services** (`src/services/`):
 - Each service is a singleton (via `getInstance()` pattern)
@@ -321,15 +401,16 @@ storageManager.workingState.currentSessionId = newId;
 
 ## UI Components
 
-**App.vue** - Main popup (700×600px, Chrome max height) with three view tabs:
+**App.vue** - Main popup (700×600px, Chrome max height) with four view tabs:
 - **Recent**: Scrollable list of 30 most recent tabs (double-click to switch, hover for close button)
 - **Windows**: All windows with tabs - fully interactive management view
+- **X Marks**: X/Twitter bookmark sync, search, and management
 - **Debug**: Initialization status and diagnostic tools
 - **Header**: UNOS logo, stat pills (tabs/windows/active time), TOOLS dropdown menu
 - **Current tab bar**: Shows active tab with favicon, title, domain, time, UTC timestamp, tags
   - Hover over title reveals copy-title and copy-URL micro icons
   - Edit tags/notes button, Save button
-- **TOOLS dropdown**: Export (active), URL Grepper (coming soon), Scroll Screenshot (coming soon)
+- **TOOLS dropdown**: Export, URL Grepper, Scroll Screenshot
 - **Theme**: Dark olive header (`#2A3328`), warm beige page (`#F5F4EE`), NASA/DARPA aesthetic
 - Popup stays open when switching tabs (no `window.close()`)
 
@@ -353,6 +434,30 @@ storageManager.workingState.currentSessionId = newId;
 - **ZIP** (recommended): All tables as separate CSV files with UTF-8 BOM
 - **JSON**: Complete data in single file
 - **CSV**: Tabs only
+
+**UrlGrepperDialog.vue** - URL extraction tool:
+- Toggle collection on/off (injects content script into active tab)
+- Regex filter input with live filtering
+- URL list display with count
+- Copy to clipboard / Download as `.txt`
+- State in `chrome.storage.local` (urlGrepper_enabled, urlGrepper_grepStr, urlGrepper_urlList)
+
+**ScrollCaptureDialog.vue** - Full-page screenshot tool:
+- Scroll delay selector (300ms / 500ms / 1000ms)
+- Progress bar with status text (capturing → stitching → done)
+- Monitors `chrome.storage.local` for capture_status/capture_progress updates
+- Sends `START_CAPTURE` message to background, fire-and-forget
+
+**XBookmarksView.vue** - X/Twitter bookmark manager:
+- Header: Sync button (spinner during sync), last sync time, bookmark count, export buttons (JSON/Markdown)
+- Search bar with debounced filtering (150ms), "Show archived" toggle
+- Scrollable bookmark list (newest first, paginated at 100)
+- Collapsed row: author avatar circle, @handle, display name, truncated text, relative timestamp, media badges, tag pills
+- Click to expand: full text, image thumbnails, tag editor (add/remove inline), notes textarea, archive button, "Open on X" link
+- Video bookmarks: "Download Video" button (uses native messaging host), "Copy URL" fallback
+- Download states: downloading spinner, "Downloaded ✓", error with retry
+- Empty state with sync instructions
+- Monitors `chrome.storage.onChanged` for live sync/download progress
 
 ## Data Retention & Cleanup
 
@@ -386,9 +491,14 @@ storageManager.workingState.currentSessionId = newId;
 ## Extension Manifest (Manifest V3)
 
 **Permissions required**:
-- `tabs` - Read tab state and events
-- `storage` - Access chrome.storage.session
+- `tabs` - Read tab state and events, capture visible tab
+- `storage` - Access chrome.storage.session and chrome.storage.local
 - `alarms` - Schedule periodic tasks
+- `downloads` - Save scroll screenshots and URL exports
+- `scripting` - Inject capture engine into pages
+- `offscreen` - Stitch screenshot frames off-screen
+- `cookies` - Read X/Twitter auth cookies for video download
+- `nativeMessaging` - Communicate with native video download host (yt-dlp)
 - `<all_urls>` - Read tab URLs for tracking
 
 **Service worker** runs in `background.js` (generated by WXT)
