@@ -1,11 +1,14 @@
 #!/bin/bash
 # Installs the UNOS native messaging host for Chrome (macOS)
 #
-# Usage: ./install.sh
+# Usage: ./install.sh [extension-id]
 #
 # What this does:
-#   1. Creates a local .venv and installs yt-dlp into it
-#   2. Registers the native messaging host with Chrome
+#   1. Copies native host files to ~/Library/Application Support/UNOS/
+#      (outside macOS-protected ~/Documents, so Chrome can execute them)
+#   2. Creates a venv there with yt-dlp installed
+#   3. Registers the native messaging host manifest with Chrome
+#   4. Auto-detects extension ID(s) from Chrome profiles
 #
 # Prerequisites:
 #   - python3
@@ -14,8 +17,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-HOST_PATH="$SCRIPT_DIR/launch.sh"
-VENV_DIR="$SCRIPT_DIR/.venv"
+INSTALL_DIR="$HOME/Library/Application Support/UNOS/native-host"
+VENV_DIR="$INSTALL_DIR/.venv"
 MANIFEST_NAME="com.unos.video_downloader"
 MANIFEST_DIR="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
 
@@ -24,11 +27,6 @@ echo "====================================="
 echo ""
 
 # ── Check prerequisites ──
-
-if [ ! -f "$HOST_PATH" ]; then
-  echo "Error: unos_video_host.py not found at $HOST_PATH" >&2
-  exit 1
-fi
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "Error: python3 not found. Install Python 3 first." >&2
@@ -45,6 +43,40 @@ fi
 
 echo ""
 
+# ── Install native host files ──
+
+echo "Installing to: $INSTALL_DIR"
+mkdir -p "$INSTALL_DIR"
+
+# Copy host files from source to install location
+cp "$SCRIPT_DIR/unos_video_host.py" "$INSTALL_DIR/unos_video_host.py"
+cp "$SCRIPT_DIR/requirements.txt"   "$INSTALL_DIR/requirements.txt" 2>/dev/null || true
+
+# Create launch.sh at the install location
+cat > "$INSTALL_DIR/launch.sh" << 'LAUNCHER'
+#!/bin/bash
+# Launcher for UNOS native messaging host.
+# Chrome launches native hosts with a minimal PATH, so pyenv/nvm etc. won't work.
+# This script ensures we use the venv Python that has yt-dlp installed.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LOG="$SCRIPT_DIR/native-host.log"
+echo "$(date '+%Y-%m-%d %H:%M:%S') [launch.sh] Started (pid=$$)" >> "$LOG"
+
+PYTHON="$SCRIPT_DIR/.venv/bin/python3"
+SCRIPT="$SCRIPT_DIR/unos_video_host.py"
+
+if [ ! -x "$PYTHON" ]; then
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [launch.sh] ERROR: Python not found: $PYTHON" >> "$LOG"
+  exit 1
+fi
+
+exec "$PYTHON" "$SCRIPT" 2>>"$LOG"
+LAUNCHER
+chmod +x "$INSTALL_DIR/launch.sh"
+
+echo "[OK] Host files installed"
+echo ""
+
 # ── Create venv and install yt-dlp ──
 
 if [ -d "$VENV_DIR" ]; then
@@ -54,7 +86,7 @@ else
   echo "Creating .venv and installing yt-dlp..."
   python3 -m venv "$VENV_DIR"
   "$VENV_DIR/bin/pip" install --upgrade --quiet pip
-  "$VENV_DIR/bin/pip" install --quiet -r "$SCRIPT_DIR/requirements.txt"
+  "$VENV_DIR/bin/pip" install --quiet yt-dlp
 fi
 
 # Verify yt-dlp is installed
@@ -68,45 +100,91 @@ fi
 
 echo ""
 
+# ── Find extension ID(s) ──
+
+EXT_IDS=()
+
+if [ -n "$1" ]; then
+  EXT_IDS+=("$1")
+  echo "Using provided extension ID: $1"
+else
+  echo "Auto-detecting UNOS extension IDs from Chrome profiles..."
+  CHROME_DIR="$HOME/Library/Application Support/Google/Chrome"
+
+  if [ -d "$CHROME_DIR" ]; then
+    while IFS= read -r prefs_file; do
+      ids=$(python3 -c "
+import json, sys, os
+try:
+    with open(os.path.expandvars('$prefs_file')) as f:
+        prefs = json.load(f)
+    exts = prefs.get('extensions', {}).get('settings', {})
+    for eid, data in exts.items():
+        path = data.get('path', '')
+        if 'unos' in path.lower():
+            print(eid)
+except Exception:
+    pass
+" 2>/dev/null)
+
+      for id in $ids; do
+        if [[ ! " ${EXT_IDS[*]} " =~ " $id " ]]; then
+          EXT_IDS+=("$id")
+          profile_name=$(basename "$(dirname "$prefs_file")")
+          echo "  Found: $id (profile: $profile_name)"
+        fi
+      done
+    done < <(find "$CHROME_DIR" -name "Secure Preferences" -maxdepth 2 2>/dev/null)
+  fi
+
+  if [ ${#EXT_IDS[@]} -eq 0 ]; then
+    echo ""
+    echo "Could not auto-detect extension ID."
+    echo "Enter your UNOS extension ID (find it at chrome://extensions):"
+    read -r MANUAL_ID
+    if [ -z "$MANUAL_ID" ]; then
+      echo "Error: Extension ID is required." >&2
+      exit 1
+    fi
+    EXT_IDS+=("$MANUAL_ID")
+  fi
+fi
+
+echo ""
+
 # ── Register native messaging host ──
-
-echo "Enter your UNOS extension ID (find it at chrome://extensions):"
-read -r EXT_ID
-
-if [ -z "$EXT_ID" ]; then
-  echo "Error: Extension ID is required." >&2
-  exit 1
-fi
-
-# Validate extension ID format (32 lowercase letters)
-if ! echo "$EXT_ID" | grep -qE '^[a-z]{32}$'; then
-  echo "Warning: Extension ID looks unusual (expected 32 lowercase letters)." >&2
-  echo "Proceeding anyway..." >&2
-fi
 
 mkdir -p "$MANIFEST_DIR"
 
-# Escape backslashes and quotes in path for valid JSON
-ESCAPED_HOST_PATH=$(printf '%s' "$HOST_PATH" | sed 's/\\/\\\\/g; s/"/\\"/g')
+# Build allowed_origins JSON array
+ORIGINS=""
+for id in "${EXT_IDS[@]}"; do
+  if [ -n "$ORIGINS" ]; then
+    ORIGINS="$ORIGINS, "
+  fi
+  ORIGINS="${ORIGINS}\"chrome-extension://${id}/\""
+done
+
+HOST_PATH="$INSTALL_DIR/launch.sh"
 
 cat > "$MANIFEST_DIR/$MANIFEST_NAME.json" << EOF
 {
   "name": "$MANIFEST_NAME",
   "description": "UNOS video downloader for X/Twitter bookmarks",
-  "path": "$ESCAPED_HOST_PATH",
+  "path": "$HOST_PATH",
   "type": "stdio",
-  "allowed_origins": ["chrome-extension://$EXT_ID/"]
+  "allowed_origins": [$ORIGINS]
 }
 EOF
 
-chmod +x "$HOST_PATH"
-
-echo ""
 echo "Done."
 echo ""
-echo "  venv:     $VENV_DIR"
-echo "  yt-dlp:   $VENV_DIR/bin/yt-dlp"
-echo "  Host:     $HOST_PATH"
-echo "  Manifest: $MANIFEST_DIR/$MANIFEST_NAME.json"
+echo "  Installed: $INSTALL_DIR"
+echo "  venv:      $VENV_DIR"
+echo "  yt-dlp:    $VENV_DIR/bin/yt-dlp"
+echo "  Host:      $HOST_PATH"
+echo "  Manifest:  $MANIFEST_DIR/$MANIFEST_NAME.json"
+echo "  Origins:   $ORIGINS"
+echo "  Log:       $INSTALL_DIR/native-host.log"
 echo ""
 echo "Restart Chrome for the native host to take effect."

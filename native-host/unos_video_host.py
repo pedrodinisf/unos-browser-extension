@@ -53,6 +53,10 @@ def send_response(obj):
     sys.stdout.buffer.write(struct.pack("<I", len(encoded)))
     sys.stdout.buffer.write(encoded)
     sys.stdout.buffer.flush()
+    # Brief pause so Chrome can read the response before the process exits.
+    # Without this, Chrome may report "Native host has exited" on fast completions.
+    import time
+    time.sleep(0.1)
 
 
 def cookies_to_netscape(cookies):

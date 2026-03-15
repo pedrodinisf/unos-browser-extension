@@ -106,8 +106,8 @@ The X Bookmarks video download feature uses a **native messaging host** to invok
 ### Prerequisites
 
 ```bash
-# macOS — install yt-dlp and ffmpeg
-brew install yt-dlp ffmpeg
+# macOS — install ffmpeg (yt-dlp is installed automatically by the script)
+brew install ffmpeg
 ```
 
 ### Install the Native Host
@@ -118,17 +118,18 @@ cd native-host
 ```
 
 The install script will:
-1. Create a local `.venv/` and install `yt-dlp` into it
-2. Prompt for your extension ID (find it at `chrome://extensions`)
-3. Register the native messaging host with Chrome
+1. Copy host files to `~/Library/Application Support/UNOS/native-host/` (outside macOS-protected `~/Documents/` so Chrome can execute them)
+2. Create a `.venv/` there and install `yt-dlp` into it
+3. Auto-detect your UNOS extension ID(s) from Chrome profiles (or accept a manual ID as `./install.sh <id>`)
+4. Register the native messaging host manifest with Chrome
 
-After installing, **restart Chrome** for the native host to take effect.
+After installing, **restart Chrome** (Cmd+Q, not just close the window) for the native host to take effect.
 
 ### How It Works
 
 ```
 Popup "Download Video" → Background service worker → chrome.cookies.getAll (X auth)
-    → chrome.runtime.sendNativeMessage → native-host/unos_video_host.py
+    → chrome.runtime.sendNativeMessage → ~/Library/Application Support/UNOS/native-host/unos_video_host.py
     → yt-dlp subprocess (from .venv) → ~/Downloads/{tweet_id}.mp4
 ```
 
@@ -142,8 +143,9 @@ Popup "Download Video" → Background service worker → chrome.cookies.getAll (
 | Error | Fix |
 |-------|-----|
 | "Native host not installed" | Run `cd native-host && ./install.sh` |
-| "yt-dlp not found" | Run `brew install yt-dlp` or re-run `./install.sh` |
-| "Native host crashed" | Check that `python3` is available and `.venv/` exists |
+| "yt-dlp not found" | Re-run `./install.sh` (it installs yt-dlp automatically) |
+| "Native host crashed" | Check `~/Library/Application Support/UNOS/native-host/native-host.log` for details |
+| "Extension ID mismatch" | Re-run `./install.sh` (it auto-detects the correct ID) |
 | Auth/login errors | Make sure you're logged in to `x.com` in Chrome |
 
 ## Development
@@ -191,11 +193,11 @@ unos_browser_extension/
 │           ├── ExportDialog.vue       # Export options
 │           ├── UrlGrepperDialog.vue   # URL grepper UI
 │           └── ScrollCaptureDialog.vue # Scroll screenshot UI
-├── native-host/
+├── native-host/                         # Source files (installed to ~/Library/Application Support/UNOS/)
 │   ├── unos_video_host.py             # Native messaging host (yt-dlp)
-│   ├── install.sh                     # macOS installer
-│   ├── requirements.txt               # Python dependencies
-│   └── .venv/                         # Local venv (gitignored, created by install.sh)
+│   ├── launch.sh                      # Bash launcher for Chrome native messaging
+│   ├── install.sh                     # macOS installer (copies to safe location, auto-detects extension ID)
+│   └── requirements.txt               # Python dependencies
 ├── public/
 │   ├── captureEngine.js               # Injected into pages for scroll capture
 │   ├── offscreen.html                 # Offscreen document for frame stitching
