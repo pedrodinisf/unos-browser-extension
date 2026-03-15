@@ -450,6 +450,18 @@ watch(bookmarks, () => {
     }
   });
 });
+
+function reset() {
+  searchQuery.value = '';
+  filterHasMedia.value = false;
+  filterHasVideo.value = false;
+  filterHasTags.value = false;
+  showFilterDropdown.value = false;
+  expandedTweetId.value = null;
+  listEl.value?.scrollTo(0, 0);
+}
+
+defineExpose({ reset });
 </script>
 
 <template>

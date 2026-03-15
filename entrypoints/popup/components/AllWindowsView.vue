@@ -563,6 +563,17 @@ function getDomain(url: string) {
 
 // Total stats
 const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
+
+const containerEl = ref<HTMLElement | null>(null);
+
+function reset() {
+  windowSearch.value = new Map();
+  selectedTabs.value = new Set();
+  collapsedWindows.value = new Set();
+  containerEl.value?.scrollTo(0, 0);
+}
+
+defineExpose({ reset });
 </script>
 
 <template>
@@ -587,7 +598,7 @@ const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
     </div>
 
     <!-- Windows list -->
-    <div class="windows-container">
+    <div ref="containerEl" class="windows-container">
       <div
         v-for="win in openWindows"
         :key="win.persistentId"

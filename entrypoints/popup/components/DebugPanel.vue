@@ -103,6 +103,12 @@ async function forceInit() {
 onMounted(() => {
   loadDebugInfo();
 });
+
+function reset() {
+  loadDebugInfo();
+}
+
+defineExpose({ reset });
 </script>
 
 <template>

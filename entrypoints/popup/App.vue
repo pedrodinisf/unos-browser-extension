@@ -22,6 +22,40 @@ const showScrollCaptureDialog = ref(false);
 const activeView = ref<'recent' | 'windows' | 'xbookmarks' | 'debug'>('xbookmarks');
 const chromeMemoryMB = ref<number | null>(null);
 
+// View refs for reset
+const xBookmarksRef = ref<InstanceType<typeof XBookmarksView> | null>(null);
+const recentSectionRef = ref<HTMLElement | null>(null);
+const windowsRef = ref<InstanceType<typeof AllWindowsView> | null>(null);
+const debugRef = ref<InstanceType<typeof DebugPanel> | null>(null);
+
+type ViewName = 'recent' | 'windows' | 'xbookmarks' | 'debug';
+
+function switchView(view: ViewName) {
+  if (activeView.value === view) {
+    // Already on this tab — reset the view
+    resetView(view);
+  } else {
+    activeView.value = view;
+  }
+}
+
+function resetView(view: ViewName) {
+  switch (view) {
+    case 'xbookmarks':
+      xBookmarksRef.value?.reset?.();
+      break;
+    case 'recent':
+      recentSectionRef.value?.scrollTo(0, 0);
+      break;
+    case 'windows':
+      windowsRef.value?.reset?.();
+      break;
+    case 'debug':
+      debugRef.value?.reset?.();
+      break;
+  }
+}
+
 // Tweet page detection state
 const isTweetPage = ref(false);
 const tweetHasVideo = ref(false);
@@ -426,38 +460,39 @@ onUnmounted(() => {
         />
       </div>
 
-      <!-- View tabs -->
+      <!-- View tabs (click to switch, double-click active tab to reset view) -->
       <div class="view-tabs">
         <button
           class="view-tab"
           :class="{ active: activeView === 'xbookmarks' }"
-          @click="activeView = 'xbookmarks'"
+          @click="switchView('xbookmarks')"
         ><span class="view-tab-icon">&#x2715;</span>MARKS</button>
         <button
           class="view-tab"
           :class="{ active: activeView === 'recent' }"
-          @click="activeView = 'recent'"
+          @click="switchView('recent')"
         ><span class="view-tab-icon">&#x25F7;</span>RECENT</button>
         <button
           class="view-tab"
           :class="{ active: activeView === 'windows' }"
-          @click="activeView = 'windows'"
+          @click="switchView('windows')"
         ><span class="view-tab-icon">&#x2317;</span>WINDOWS</button>
         <button
           class="view-tab"
           :class="{ active: activeView === 'debug' }"
-          @click="activeView = 'debug'"
+          @click="switchView('debug')"
         ><span class="view-tab-icon">&#x2699;</span>DIAG</button>
       </div>
 
       <!-- X Bookmarks View -->
       <XBookmarksView
-        v-if="activeView === 'xbookmarks'"
+        v-show="activeView === 'xbookmarks'"
+        ref="xBookmarksRef"
         class="view-content"
       />
 
       <!-- Recent Tabs View -->
-      <section v-else-if="activeView === 'recent'" class="view-content">
+      <section v-show="activeView === 'recent'" ref="recentSectionRef" class="view-content">
         <div class="tabs-list">
           <div
             v-for="tab in recentTabs"
@@ -492,7 +527,8 @@ onUnmounted(() => {
 
       <!-- All Windows View -->
       <AllWindowsView
-        v-else-if="activeView === 'windows'"
+        v-show="activeView === 'windows'"
+        ref="windowsRef"
         :windows="windows"
         :tabs="tabs"
         class="view-content"
@@ -501,7 +537,8 @@ onUnmounted(() => {
 
       <!-- Debug Panel -->
       <DebugPanel
-        v-else-if="activeView === 'debug'"
+        v-show="activeView === 'debug'"
+        ref="debugRef"
         class="view-content"
       />
     </main>
