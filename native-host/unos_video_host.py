@@ -116,7 +116,15 @@ def download_video(url, cookies, output_dir):
         # Strip query string from URL
         clean_url = url.split("?")[0].strip()
 
-        # Build yt-dlp command
+        # Find ffmpeg for merge and audio extraction
+        ffmpeg_path = shutil.which("ffmpeg")
+        ffmpeg_args = ["--ffmpeg-location", ffmpeg_path] if ffmpeg_path else []
+        if ffmpeg_path:
+            log.info("ffmpeg path: %s", ffmpeg_path)
+        else:
+            log.warning("ffmpeg not found — merge and audio extraction may fail")
+
+        # 1) Download merged video+audio
         cmd = [
             yt_dlp_path,
             "--cookies", cookie_path,
@@ -124,10 +132,11 @@ def download_video(url, cookies, output_dir):
             "--merge-output-format", "mp4",
             "-o", str(out_dir / "%(id)s.%(ext)s"),
             "--no-warnings",
+            *ffmpeg_args,
             clean_url,
         ]
 
-        log.info("Running: %s", " ".join(cmd))
+        log.info("Running video: %s", " ".join(cmd))
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -135,7 +144,7 @@ def download_video(url, cookies, output_dir):
             timeout=300,  # 5 minute timeout
         )
 
-        log.info("yt-dlp exit code: %d", result.returncode)
+        log.info("yt-dlp video exit code: %d", result.returncode)
         if result.stdout.strip():
             log.debug("yt-dlp stdout: %s", result.stdout.strip()[:1000])
         if result.stderr.strip():
@@ -143,13 +152,36 @@ def download_video(url, cookies, output_dir):
 
         if result.returncode != 0:
             error_msg = result.stderr.strip() or result.stdout.strip() or "yt-dlp failed"
-            # Truncate very long error messages
             if len(error_msg) > 500:
                 error_msg = error_msg[:500] + "..."
             log.error("yt-dlp failed: %s", error_msg)
             return {"success": False, "error": error_msg}
 
-        # Find the downloaded file — extract tweet ID from URL
+        # 2) Extract audio-only as separate file
+        audio_cmd = [
+            yt_dlp_path,
+            "--cookies", cookie_path,
+            "-f", "bestaudio[ext=m4a]/bestaudio",
+            "-x", "--audio-format", "m4a",
+            "-o", str(out_dir / "%(id)s_audio.%(ext)s"),
+            "--no-warnings",
+            *ffmpeg_args,
+            clean_url,
+        ]
+
+        log.info("Running audio: %s", " ".join(audio_cmd))
+        audio_result = subprocess.run(
+            audio_cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        log.info("yt-dlp audio exit code: %d", audio_result.returncode)
+        if audio_result.returncode != 0:
+            log.warning("Audio extraction failed (non-fatal): %s",
+                        (audio_result.stderr.strip() or audio_result.stdout.strip())[:500])
+
+        # Find the downloaded video file — extract tweet ID from URL
         tweet_id_match = re.search(r"/status/(\d+)", clean_url)
         if tweet_id_match:
             tweet_id = tweet_id_match.group(1)

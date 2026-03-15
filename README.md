@@ -46,7 +46,7 @@ A Chrome extension for continuous tab tracking with relationship analysis, metad
 - **Tag & Notes** — Add tags and notes to any bookmark, inline editing
 - **Archive** — Soft-delete bookmarks without losing data
 - **Export** — JSON or Markdown export (Markdown groups by month with stats)
-- **Video Download** — Download videos from bookmarked tweets via yt-dlp (requires native host setup)
+- **Video Download** — Download videos from bookmarked tweets via yt-dlp with separate audio extraction (requires native host setup)
 - **Quick Video Download** — Header toolbar button auto-detects bookmarked tweets with video on the active tab
 - **Media Indicators** — Image count badges and video flags on each bookmark
 
@@ -130,13 +130,15 @@ After installing, **restart Chrome** (Cmd+Q, not just close the window) for the 
 ```
 Popup "Download Video" → Background service worker → chrome.cookies.getAll (X auth)
     → chrome.runtime.sendNativeMessage → ~/Library/Application Support/UNOS/native-host/unos_video_host.py
-    → yt-dlp subprocess (from .venv) → ~/Downloads/{tweet_id}.mp4
+    → yt-dlp subprocess (from .venv) → ~/Downloads/{id}.mp4 + {id}_audio.m4a
 ```
 
 - The extension extracts your X/Twitter auth cookies directly (no Playwright/browser launch needed)
 - Cookies are sent to the native host via Chrome's native messaging protocol
 - The native host converts cookies to Netscape format, runs yt-dlp, and returns the file path
-- Videos are saved to `~/Downloads/` as `{tweet_id}.mp4`
+- yt-dlp runs twice: first to download and merge video+audio into a single `.mp4`, then to extract audio-only as `{id}_audio.m4a`
+- Both files are saved to `~/Downloads/`
+- `launch.sh` adds `/opt/homebrew/bin` to PATH so ffmpeg is available for merging (Chrome launches native hosts with a minimal PATH)
 
 ### Troubleshooting
 

@@ -171,12 +171,13 @@ Chrome assigns ephemeral numeric IDs (tab.id, window.id) that change on restart.
 - Downloads X/Twitter videos via Chrome Native Messaging + yt-dlp
 - Gets auth cookies via `chrome.cookies.getAll({ domain: '.x.com' })`
 - Sends cookies + tweet URL to `com.unos.video_downloader` native host
-- Native host runs yt-dlp as subprocess, returns file path
+- Native host runs yt-dlp twice: merged video+audio → `{id}.mp4`, then audio-only → `{id}_audio.m4a`
 - Progress tracked via `chrome.storage.local` (xBookmarks_downloadStatus, etc.)
 - Translates native messaging errors into actionable user messages
 - Requires one-time setup: `cd native-host && ./install.sh`
 - **Install location**: `~/Library/Application Support/UNOS/native-host/` (outside macOS-protected `~/Documents/` so Chrome can execute it)
 - **Log file**: `~/Library/Application Support/UNOS/native-host/native-host.log`
+- **PATH**: `launch.sh` exports `/opt/homebrew/bin` so ffmpeg is available for merging (Chrome launches native hosts with minimal PATH)
 
 ### 5. Database Schema (Dexie)
 
@@ -383,7 +384,7 @@ storageManager.workingState.currentSessionId = newId;
 
 **Native host** (`native-host/` source, installed to `~/Library/Application Support/UNOS/native-host/`):
 - `unos_video_host.py` - Python native messaging host for video download via yt-dlp
-- `launch.sh` - Bash launcher that sets up venv Python and stderr logging
+- `launch.sh` - Bash launcher that adds Homebrew to PATH (for ffmpeg), sets up venv Python and stderr logging
 - `install.sh` - macOS installer: copies files to `~/Library/Application Support/UNOS/native-host/`, creates .venv with yt-dlp, auto-detects extension ID(s) from Chrome profiles, registers native messaging manifest
 - `requirements.txt` - Python dependencies (yt-dlp)
 - **Why installed outside project dir**: macOS Sequoia TCC restrictions prevent Chrome from executing scripts in `~/Documents/`. The install script copies files to `~/Library/Application Support/UNOS/` which is not subject to these restrictions.
