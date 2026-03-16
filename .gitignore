@@ -38,3 +38,9 @@ coverage/
 .claude/
 .tldr/
 .tldrignore
+
+# Development artifacts (keep local, not published)
+IMPLEMENTATION_VERIFICATION.md
+SYSTEM_PROMPT_X_BOOKMARKS_INTEGRATION.md
+logo_raw.png
+logo_v1.png
