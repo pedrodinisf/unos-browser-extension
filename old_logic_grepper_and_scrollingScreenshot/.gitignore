@@ -1,0 +1,10 @@
+# Tool cache
+.tldr/
+.tldrignore
+
+# Claude
+.claude/
+CLAUDE.md
+
+# Generated output
+output/
