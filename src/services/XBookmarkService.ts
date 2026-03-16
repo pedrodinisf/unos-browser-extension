@@ -87,6 +87,10 @@ export class XBookmarkService {
       let noNewContentCount = 0;
       const extracted = new Map<string, RawTweetData>();
 
+      // Track which tweet IDs we've already processed this sync to avoid
+      // double-counting when X keeps old articles in the DOM after scrolling
+      const processedThisSync = new Set<string>();
+
       while (true) {
         // Extract visible tweets
         let result: Record<string, unknown>;
@@ -102,9 +106,13 @@ export class XBookmarkService {
         for (const tweet of tweets) {
           if (!tweet.tweetId) continue;
 
+          // Skip tweets we already processed in this sync (still in DOM from earlier scroll)
+          if (processedThisSync.has(tweet.tweetId)) continue;
+          processedThisSync.add(tweet.tweetId);
+
           if (knownIds.has(tweet.tweetId)) {
             consecutiveKnown++;
-          } else if (!extracted.has(tweet.tweetId)) {
+          } else {
             extracted.set(tweet.tweetId, tweet);
             consecutiveKnown = 0;
           }
@@ -121,11 +129,14 @@ export class XBookmarkService {
 
         // Scroll down
         try {
-          const scrollResult = await sendToContentScript(tabId, 'SCROLL_DOWN');
-          const newHeight = scrollResult.scrollHeight as number;
+          await sendToContentScript(tabId, 'SCROLL_DOWN');
 
-          // Wait for content to load
+          // Wait for X to load new content BEFORE measuring height
           await sleep(SCROLL_DELAY_MS);
+
+          // Measure height AFTER the delay so new content is reflected
+          const pageInfo = await sendToContentScript(tabId, 'GET_PAGE_INFO');
+          const newHeight = pageInfo.scrollHeight as number;
 
           // Check if page grew
           if (newHeight === lastHeight) {
