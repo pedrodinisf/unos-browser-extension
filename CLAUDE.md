@@ -135,6 +135,7 @@ Chrome assigns ephemeral numeric IDs (tab.id, window.id) that change on restart.
 **CaptureService** (`src/services/CaptureService.ts`)
 - Orchestrates full-page scroll screenshots
 - Injects `captureEngine.js` into the target tab for scroll control
+- **Scroll container unrolling**: Before measuring, detects internal scroll containers (Streamlit, SPAs) where `overflow: auto/scroll` divs hold the scrollable content instead of the document. Temporarily expands these containers and their ancestors (`overflow: visible`, `height: auto`, `maxHeight: none`) so `document.scrollHeight` reflects true content height and `window.scrollTo()` works. Restores original styles after capture.
 - Captures each viewport frame via `chrome.tabs.captureVisibleTab`
 - Sends frames to an offscreen document (`public/offscreen.js`) for stitching
 - Offscreen document uses `OffscreenCanvas` to stitch frames, returns a data URL

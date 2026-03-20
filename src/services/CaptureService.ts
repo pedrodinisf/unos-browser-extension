@@ -109,6 +109,11 @@ export class CaptureService {
       });
       await sleep(100);
 
+      // Unroll internal scroll containers (Streamlit, SPAs, etc.)
+      // so document.scrollHeight reflects true content height
+      await sendToTab(tabId, 'unrollScrollContainers');
+      await sleep(200); // allow layout reflow
+
       // Get page dimensions
       const dims = await sendToTab(tabId, 'measure');
       let totalHeight = Math.min(dims.totalHeight, MAX_HEIGHT);
@@ -131,6 +136,7 @@ export class CaptureService {
 
         await this.downloadResults(result);
         await chrome.storage.local.set({ capture_status: 'done', capture_progress: 100 });
+        await sendToTab(tabId, 'restoreScrollContainers');
         return;
       }
 
@@ -178,8 +184,9 @@ export class CaptureService {
         }
       }
 
-      // Restore sticky elements
+      // Restore sticky elements and scroll containers
       await sendToTab(tabId, 'restoreStickyElements');
+      await sendToTab(tabId, 'restoreScrollContainers');
 
       // Stitch frames
       await chrome.storage.local.set({ capture_status: 'stitching', capture_progress: 96 });
@@ -204,6 +211,7 @@ export class CaptureService {
       });
       try {
         await sendToTab(tabId, 'restoreStickyElements');
+        await sendToTab(tabId, 'restoreScrollContainers');
       } catch { /* ignore */ }
     } finally {
       this.captureInProgress = false;
