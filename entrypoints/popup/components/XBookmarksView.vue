@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import type { XBookmark, XSyncState } from '../../../src/db/types';
 
 // State
@@ -9,7 +9,7 @@ const syncing = ref(false);
 const syncNewCount = ref(0);
 const searchQuery = ref('');
 const showArchived = ref(false);
-const expandedTweetId = ref<string | null>(null);
+const expandedTweetIds = reactive(new Set<string>());
 const loading = ref(true);
 const loadingMore = ref(false);
 const page = ref(1);
@@ -25,9 +25,13 @@ const sortOrder = ref<'desc' | 'asc'>('desc');
 const filterHasMedia = ref(false);
 const filterHasVideo = ref(false);
 const filterHasTags = ref(false);
-const showFilterDropdown = ref(false);
-
 const LIMIT = 100;
+
+const sortOptions = [
+  { value: 'firstSeenAt' as const, label: 'BKM' },
+  { value: 'timestamp' as const, label: 'TWD' },
+  { value: 'authorHandle' as const, label: 'AUT' },
+];
 
 // API helper
 async function sendMessage<T>(message: Record<string, unknown>): Promise<T> {
@@ -158,7 +162,7 @@ async function archiveBookmark(tweetId: string) {
   await sendMessage({ type: 'X_ARCHIVE_BOOKMARK', tweetId });
   bookmarks.value = bookmarks.value.filter((b) => b.tweetId !== tweetId);
   totalCount.value--;
-  expandedTweetId.value = null;
+  expandedTweetIds.delete(tweetId);
 }
 
 async function unarchiveBookmark(tweetId: string) {
@@ -209,6 +213,50 @@ async function exportBookmarks(format: 'json' | 'markdown') {
   } catch (err) {
     console.error('Export failed:', err);
   }
+}
+
+// Persist view state (expanded cards + scroll position) across popup reopens
+function saveViewState() {
+  const scrollTop = listEl.value?.scrollTop ?? 0;
+  chrome.storage.session.set({
+    xMarks_expandedIds: [...expandedTweetIds],
+    xMarks_scrollTop: scrollTop,
+  });
+}
+
+let pendingScrollTop = 0;
+
+async function restoreViewState() {
+  const data = await chrome.storage.session.get(['xMarks_expandedIds', 'xMarks_scrollTop']);
+  if (data.xMarks_expandedIds?.length) {
+    expandedTweetIds.clear();
+    for (const id of data.xMarks_expandedIds) {
+      expandedTweetIds.add(id);
+    }
+  }
+  pendingScrollTop = data.xMarks_scrollTop || 0;
+}
+
+// Expand/collapse a bookmark card and scroll it into view
+function toggleExpand(tweetId: string, event: MouseEvent) {
+  const collapsing = expandedTweetIds.has(tweetId);
+  if (collapsing) {
+    expandedTweetIds.delete(tweetId);
+  } else {
+    expandedTweetIds.add(tweetId);
+  }
+  tagInput.value = '';
+
+  if (!collapsing) {
+    nextTick(() => {
+      const card = (event.currentTarget as HTMLElement)?.closest('.xbm-card');
+      if (card) {
+        card.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      }
+    });
+  }
+
+  saveViewState();
 }
 
 // Download video via native host
@@ -337,22 +385,9 @@ const showBookmarkedTime = computed(() => sortBy.value === 'firstSeenAt');
 
 const hasMore = computed(() => bookmarks.value.length < totalCount.value);
 
-const activeFilterCount = computed(() => {
-  let count = 0;
-  if (filterHasMedia.value) count++;
-  if (filterHasVideo.value) count++;
-  if (filterHasTags.value) count++;
-  return count;
-});
-
-const sortLabel = computed(() => {
-  switch (sortBy.value) {
-    case 'firstSeenAt': return 'Bookmarked';
-    case 'timestamp': return 'Tweet date';
-    case 'authorHandle': return 'Author';
-    default: return 'Sort';
-  }
-});
+const anyFiltersActive = computed(() =>
+  filterHasMedia.value || filterHasVideo.value || filterHasTags.value || showArchived.value
+);
 
 // Debounced search
 let searchTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -383,14 +418,6 @@ function toggleSortOrder() {
   sortOrder.value = sortOrder.value === 'desc' ? 'asc' : 'desc';
 }
 
-// Close filter dropdown on outside click
-function onDocClick(e: MouseEvent) {
-  const target = e.target as HTMLElement;
-  if (!target.closest('.xbm-filter-dropdown-wrap')) {
-    showFilterDropdown.value = false;
-  }
-}
-
 // Infinite scroll via IntersectionObserver
 const sentinel = ref<HTMLElement | null>(null);
 const listEl = ref<HTMLElement | null>(null);
@@ -409,11 +436,19 @@ function setupObserver() {
   if (sentinel.value) observer.observe(sentinel.value);
 }
 
+// Save scroll position on scroll (debounced)
+let scrollSaveTimer: ReturnType<typeof setTimeout> | null = null;
+function onListScroll() {
+  if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
+  scrollSaveTimer = setTimeout(saveViewState, 300);
+}
+
 // Lifecycle
-onMounted(() => {
+onMounted(async () => {
+  // Restore expanded IDs before loading data so cards render expanded
+  await restoreViewState();
   loadData();
   chrome.storage.onChanged.addListener(onStorageChanged);
-  document.addEventListener('click', onDocClick);
 
   // Check if sync or download is already in progress
   chrome.storage.local.get(
@@ -434,22 +469,34 @@ onMounted(() => {
     },
   );
 
-  nextTick(() => setupObserver());
+  nextTick(() => {
+    setupObserver();
+    // Attach scroll listener for persisting scroll position
+    if (listEl.value) {
+      listEl.value.removeEventListener('scroll', onListScroll);
+      listEl.value.addEventListener('scroll', onListScroll, { passive: true });
+    }
+  });
 });
 
 onUnmounted(() => {
   chrome.storage.onChanged.removeListener(onStorageChanged);
-  document.removeEventListener('click', onDocClick);
+  if (listEl.value) listEl.value.removeEventListener('scroll', onListScroll);
+  if (scrollSaveTimer) clearTimeout(scrollSaveTimer);
   if (searchTimeout) clearTimeout(searchTimeout);
   if (observer) observer.disconnect();
 });
 
-// Re-observe sentinel after data loads
+// Re-observe sentinel after data loads and restore pending scroll position
 watch(bookmarks, () => {
   nextTick(() => {
     if (sentinel.value && observer) {
       observer.disconnect();
       observer.observe(sentinel.value);
+    }
+    if (pendingScrollTop && listEl.value) {
+      listEl.value.scrollTo(0, pendingScrollTop);
+      pendingScrollTop = 0;
     }
   });
 });
@@ -459,9 +506,9 @@ function reset() {
   filterHasMedia.value = false;
   filterHasVideo.value = false;
   filterHasTags.value = false;
-  showFilterDropdown.value = false;
-  expandedTweetId.value = null;
+  expandedTweetIds.clear();
   listEl.value?.scrollTo(0, 0);
+  saveViewState();
 }
 
 defineExpose({ reset });
@@ -510,7 +557,7 @@ defineExpose({ reset });
     <!-- Status message -->
     <div v-if="statusMsg" class="xbm-status">{{ statusMsg }}</div>
 
-    <!-- Search + sort/filter bar -->
+    <!-- Search bar -->
     <div class="xbm-filter-bar">
       <input
         v-model="searchQuery"
@@ -518,71 +565,75 @@ defineExpose({ reset });
         class="xbm-search"
         placeholder="Search bookmarks..."
       />
-      <label class="xbm-archived-toggle">
-        <input type="checkbox" v-model="showArchived" />
-        <span>Archived</span>
-      </label>
     </div>
 
-    <!-- Sort & filter controls -->
-    <div class="xbm-sort-bar">
-      <div class="xbm-showing">
-        {{ bookmarks.length }}<span class="xbm-showing-sep">/</span>{{ totalCount }}
-      </div>
+    <!-- Instrument bar -->
+    <div class="xbm-instrument-bar">
+      <span class="xbm-readout">{{ bookmarks.length }}<span class="xbm-readout-sep">/</span>{{ totalCount }}</span>
 
-      <div class="xbm-sort-controls">
-        <select v-model="sortBy" class="xbm-sort-select" title="Sort by">
-          <option value="firstSeenAt">Bookmarked</option>
-          <option value="timestamp">Tweet date</option>
-          <option value="authorHandle">Author</option>
-        </select>
+      <span class="xbm-bar-divider"></span>
+
+      <!-- Sort segment group -->
+      <div class="xbm-seg-group">
         <button
-          class="xbm-sort-dir-btn"
+          v-for="opt in sortOptions"
+          :key="opt.value"
+          class="xbm-seg-btn"
+          :class="{ active: sortBy === opt.value }"
+          :title="'Sort by ' + opt.label"
+          @click="sortBy = opt.value"
+        >{{ opt.label }}</button>
+        <button
+          class="xbm-seg-btn xbm-seg-dir"
+          :title="sortOrder === 'desc' ? 'Descending' : 'Ascending'"
           @click="toggleSortOrder"
-          :title="sortOrder === 'desc' ? 'Newest first' : 'Oldest first'"
-        >
-          <svg v-if="sortOrder === 'desc'" width="12" height="12" viewBox="0 0 16 16" fill="none">
-            <path d="M8 3v10M4 9l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          <svg v-else width="12" height="12" viewBox="0 0 16 16" fill="none">
-            <path d="M8 13V3M4 7l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </button>
+        >{{ sortOrder === 'desc' ? '▼' : '▲' }}</button>
       </div>
 
-      <div class="xbm-filter-dropdown-wrap">
+      <span class="xbm-bar-divider"></span>
+
+      <!-- Filter toggle group -->
+      <div class="xbm-toggle-group">
         <button
-          class="xbm-filter-btn"
-          :class="{ active: activeFilterCount > 0 }"
-          @click.stop="showFilterDropdown = !showFilterDropdown"
-        >
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-            <path d="M1.5 3h13M3.5 7h9M5.5 11h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-          <span v-if="activeFilterCount > 0" class="xbm-filter-badge">{{ activeFilterCount }}</span>
-        </button>
-        <div v-if="showFilterDropdown" class="xbm-filter-dropdown" @click.stop>
-          <label class="xbm-filter-option">
-            <input type="checkbox" v-model="filterHasMedia" />
-            <span>Has images</span>
-          </label>
-          <label class="xbm-filter-option">
-            <input type="checkbox" v-model="filterHasVideo" />
-            <span>Has video</span>
-          </label>
-          <label class="xbm-filter-option">
-            <input type="checkbox" v-model="filterHasTags" />
-            <span>Has tags</span>
-          </label>
-          <button
-            v-if="activeFilterCount > 0"
-            class="xbm-filter-clear"
-            @click="filterHasMedia = false; filterHasVideo = false; filterHasTags = false"
-          >
-            Clear filters
-          </button>
-        </div>
+          class="xbm-toggle-btn"
+          :class="{ active: filterHasMedia }"
+          title="Has images"
+          @click="filterHasMedia = !filterHasMedia"
+        >IMG</button>
+        <button
+          class="xbm-toggle-btn"
+          :class="{ active: filterHasVideo }"
+          title="Has video"
+          @click="filterHasVideo = !filterHasVideo"
+        >VID</button>
+        <button
+          class="xbm-toggle-btn"
+          :class="{ active: filterHasTags }"
+          title="Has tags"
+          @click="filterHasTags = !filterHasTags"
+        >TAG</button>
+        <button
+          class="xbm-toggle-btn xbm-toggle-arch"
+          :class="{ active: showArchived }"
+          title="Show archived"
+          @click="showArchived = !showArchived"
+        >ARCH</button>
       </div>
+
+      <span class="xbm-bar-divider"></span>
+
+      <!-- Reset button -->
+      <button
+        class="xbm-reset"
+        :class="{ disabled: expandedTweetIds.size === 0 }"
+        :disabled="expandedTweetIds.size === 0"
+        title="Collapse all and scroll to top"
+        @click="expandedTweetIds.clear(); listEl?.scrollTo(0, 0); saveViewState()"
+      >
+        <svg width="10" height="10" viewBox="0 0 16 16" fill="none">
+          <path d="M4 6l4-4 4 4M4 10l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
     </div>
 
     <!-- Loading -->
@@ -593,7 +644,7 @@ defineExpose({ reset });
 
     <!-- Empty state -->
     <div v-else-if="bookmarks.length === 0 && !loading" class="xbm-empty">
-      <template v-if="searchQuery || activeFilterCount > 0">
+      <template v-if="searchQuery || anyFiltersActive">
         <p>No matching bookmarks.</p>
         <button
           class="xbm-clear-filters-btn"
@@ -619,10 +670,10 @@ defineExpose({ reset });
         v-for="bm in bookmarks"
         :key="bm.tweetId"
         class="xbm-card"
-        :class="{ expanded: expandedTweetId === bm.tweetId }"
+        :class="{ expanded: expandedTweetIds.has(bm.tweetId) }"
       >
         <!-- Collapsed row -->
-        <div class="xbm-row" @click="expandedTweetId = expandedTweetId === bm.tweetId ? null : bm.tweetId; tagInput = ''">
+        <div class="xbm-row" @click="toggleExpand(bm.tweetId, $event)">
           <div class="xbm-avatar" :style="{ background: authorColor(bm.authorHandle) }">
             {{ authorInitial(bm.authorHandle) }}
           </div>
@@ -650,7 +701,7 @@ defineExpose({ reset });
         </div>
 
         <!-- Expanded detail -->
-        <div v-if="expandedTweetId === bm.tweetId" class="xbm-detail">
+        <div v-if="expandedTweetIds.has(bm.tweetId)" class="xbm-detail">
           <!-- Full text -->
           <div class="xbm-detail-text" v-html="formatTweetFull(bm.text)"></div>
 
@@ -667,8 +718,8 @@ defineExpose({ reset });
           </div>
 
           <!-- Media thumbnails -->
-          <div v-if="bm.mediaUrls.length > 0" class="xbm-media-grid">
-            <img v-for="(url, i) in bm.mediaUrls" :key="i" :src="url" class="xbm-media-thumb" />
+          <div v-if="bm.mediaUrls.length > 0" :class="['xbm-media-grid', { 'xbm-media-grid--video': bm.hasVideo }]">
+            <img v-for="(url, i) in bm.mediaUrls" :key="i" :src="url" :class="['xbm-media-thumb', { 'xbm-media-thumb--video': bm.hasVideo }]" />
           </div>
 
           <!-- Video download -->
@@ -865,11 +916,10 @@ defineExpose({ reset });
   text-align: center;
 }
 
-/* -- Filter bar -- */
+/* -- Search bar -- */
 .xbm-filter-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
   padding: 6px 12px;
   background: var(--bg-page);
   border-bottom: 1px solid var(--border-light);
@@ -891,183 +941,147 @@ defineExpose({ reset });
   border-color: var(--accent-green);
 }
 
-.xbm-archived-toggle {
+/* -- Instrument bar -- */
+.xbm-instrument-bar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  font-size: 10px;
-  color: var(--text-muted);
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.xbm-archived-toggle input {
-  cursor: pointer;
-}
-
-/* -- Sort & filter bar -- */
-.xbm-sort-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 4px 12px;
   background: var(--bg-page);
   border-bottom: 1px solid var(--border-light);
   flex-shrink: 0;
 }
 
-.xbm-showing {
+.xbm-readout {
   font-size: 10px;
   font-family: var(--font-mono);
+  font-weight: 700;
   color: var(--text-muted);
+  letter-spacing: 0.04em;
   flex-shrink: 0;
 }
 
-.xbm-showing-sep {
+.xbm-readout-sep {
   color: var(--border-warm);
   margin: 0 1px;
 }
 
-.xbm-sort-controls {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: auto;
+.xbm-bar-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border-warm);
+  flex-shrink: 0;
 }
 
-.xbm-sort-select {
-  padding: 2px 4px;
-  font-size: 10px;
+/* Segmented sort group */
+.xbm-seg-group {
+  display: flex;
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.xbm-seg-btn {
+  padding: 2px 8px;
+  background: var(--bg-card);
+  border: none;
+  border-right: 1px solid var(--border-light);
+  cursor: pointer;
   font-family: var(--font-mono);
-  background: var(--bg-card);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-light);
-  border-radius: 3px;
-  cursor: pointer;
-  outline: none;
-}
-
-.xbm-sort-select:focus {
-  border-color: var(--accent-green);
-}
-
-.xbm-sort-dir-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  background: var(--bg-card);
-  border: 1px solid var(--border-light);
-  border-radius: 3px;
-  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--text-secondary);
   transition: all 0.12s;
+  line-height: 18px;
 }
 
-.xbm-sort-dir-btn:hover {
-  border-color: var(--accent-green);
-  color: var(--accent-green);
+.xbm-seg-btn:last-child {
+  border-right: none;
 }
 
-/* Filter dropdown */
-.xbm-filter-dropdown-wrap {
-  position: relative;
+.xbm-seg-btn:hover:not(.active) {
+  background: var(--bg-alt);
+  color: var(--text-primary);
 }
 
-.xbm-filter-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  background: var(--bg-card);
-  border: 1px solid var(--border-light);
-  border-radius: 3px;
-  cursor: pointer;
-  color: var(--text-secondary);
-  transition: all 0.12s;
-  position: relative;
-}
-
-.xbm-filter-btn:hover,
-.xbm-filter-btn.active {
-  border-color: var(--accent-green);
-  color: var(--accent-green);
-}
-
-.xbm-filter-badge {
-  position: absolute;
-  top: -4px;
-  right: -4px;
-  width: 13px;
-  height: 13px;
+.xbm-seg-btn.active {
   background: var(--accent-green);
   color: #fff;
+}
+
+.xbm-seg-dir {
   font-size: 8px;
+  padding: 2px 6px;
+  letter-spacing: 0;
+}
+
+/* Filter toggle group */
+.xbm-toggle-group {
+  display: flex;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.xbm-toggle-btn {
+  padding: 2px 6px;
+  background: transparent;
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 9px;
   font-weight: 700;
-  border-radius: 50%;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  transition: all 0.12s;
+  line-height: 18px;
+}
+
+.xbm-toggle-btn:hover:not(.active) {
+  color: var(--text-secondary);
+  border-color: var(--text-muted);
+}
+
+.xbm-toggle-btn.active {
+  color: var(--accent-green);
+  border-color: var(--accent-green);
+  background: rgba(5, 150, 105, 0.08);
+}
+
+/* ARCH toggle: amber variant */
+.xbm-toggle-arch.active {
+  color: var(--accent-amber);
+  border-color: var(--accent-amber);
+  background: rgba(217, 119, 6, 0.08);
+}
+
+/* Reset button */
+.xbm-reset {
   display: flex;
   align-items: center;
   justify-content: center;
-  line-height: 1;
-}
-
-.xbm-filter-dropdown {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  margin-top: 4px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-light);
-  border-radius: 4px;
-  padding: 6px 0;
-  z-index: 100;
-  min-width: 130px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
-
-.xbm-filter-option {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  font-size: 10px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
   color: var(--text-secondary);
-  cursor: pointer;
-  transition: background 0.1s;
+  transition: all 0.12s;
+  flex-shrink: 0;
 }
 
-.xbm-filter-option:hover {
-  background: var(--bg-alt);
+.xbm-reset:hover:not(.disabled) {
+  color: var(--accent-green);
 }
 
-.xbm-filter-option input {
-  cursor: pointer;
-  accent-color: var(--accent-green);
-}
-
-.xbm-filter-clear {
-  display: block;
-  width: 100%;
-  padding: 4px 10px;
-  margin-top: 4px;
-  border-top: 1px solid var(--border-light);
-  background: none;
-  border-left: none;
-  border-right: none;
-  border-bottom: none;
-  font-size: 9px;
-  color: var(--accent-red);
-  cursor: pointer;
-  text-align: left;
-}
-
-.xbm-filter-clear:hover {
-  background: var(--bg-alt);
+.xbm-reset.disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 
 /* -- Loading & Empty -- */
@@ -1366,6 +1380,12 @@ defineExpose({ reset });
   border-radius: 3px;
   border: 1px solid var(--border-light);
   cursor: pointer;
+}
+
+.xbm-media-thumb--video {
+  width: 200px;
+  height: 150px;
+  border-radius: 4px;
 }
 
 .xbm-video-section {

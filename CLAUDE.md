@@ -458,9 +458,8 @@ storageManager.workingState.currentSessionId = newId;
 
 **XBookmarksView.vue** - X/Twitter bookmark manager:
 - Header: Sync button (spinner during sync), last sync time, bookmark count, export buttons (JSON/Markdown)
-- Search bar with debounced filtering (150ms), "Show archived" toggle
-- Sort controls: bookmarked date / tweet date / author, asc/desc toggle
-- Content filters dropdown: has images, has video, has tags (badge shows active count)
+- Search bar with debounced filtering (150ms)
+- Instrument bar (NASA aesthetic): readout (`12/542`) │ sort segment group (`BKM TWD AUT ▼`, radio behavior, active=green bg) │ filter toggles (`IMG VID TAG ARCH`, independent pills, active=green border, ARCH=amber) │ reset button (collapse all, dimmed when nothing expanded). All labels: monospace 9px/700/uppercase.
 - Scrollable bookmark list with infinite scroll (IntersectionObserver, paginated at 100)
 - Collapsed row: author avatar circle, @handle, display name, truncated text with green left border, relative timestamp, media badges, tag pills
 - Tweet text formatting: @mentions highlighted green, URLs in amber, #hashtags in green; emojis preserved natively

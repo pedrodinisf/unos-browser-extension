@@ -596,8 +596,8 @@ html, body {
   --bg-overlay: rgba(0, 0, 0, 0.5);
 
   --text-primary: #2D2D2D;
-  --text-secondary: #6B7280;
-  --text-muted: #9CA3AF;
+  --text-secondary: #555D66;
+  --text-muted: #7B8490;
   --text-inverse: #F5F5F0;
 
   --accent-green: #059669;
