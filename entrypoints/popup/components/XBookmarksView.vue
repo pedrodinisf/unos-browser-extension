@@ -313,7 +313,10 @@ function formatTweetPreview(text: string): string {
 }
 
 function formatTweetFull(text: string): string {
-  return formatTweetHtml(text);
+  // Collapse multiple newlines into single line break for density
+  let html = formatTweetHtml(text);
+  html = html.replace(/\n{2,}/g, '<br>').replace(/\n/g, '<br>');
+  return html;
 }
 
 function authorInitial(handle: string): string {
@@ -704,18 +707,33 @@ defineExpose({ reset });
             </button>
           </div>
 
-          <!-- Tags -->
-          <div class="xbm-detail-tags">
-            <span v-for="tag in bm.tags" :key="tag" class="xbm-tag-pill removable" @click.stop="removeTag(bm.tweetId, tag)">
-              {{ tag }} &times;
-            </span>
-            <input
-              v-model="tagInput"
-              class="xbm-tag-input"
-              placeholder="Add tag..."
-              @keydown.stop="handleTagKeydown($event, bm.tweetId)"
-              @click.stop
-            />
+          <!-- Tags + Actions row -->
+          <div class="xbm-detail-tags-actions">
+            <div class="xbm-detail-tags">
+              <span v-for="tag in bm.tags" :key="tag" class="xbm-tag-pill removable" @click.stop="removeTag(bm.tweetId, tag)">
+                {{ tag }} &times;
+              </span>
+              <input
+                v-model="tagInput"
+                class="xbm-tag-input"
+                placeholder="Add tag..."
+                @keydown.stop="handleTagKeydown($event, bm.tweetId)"
+                @click.stop
+              />
+            </div>
+            <div class="xbm-detail-actions">
+              <button class="xbm-link-btn" @click.stop="openInBackground(bm.tweetUrl)">Open on X</button>
+              <button
+                v-if="!bm.archived"
+                class="xbm-archive-btn"
+                @click.stop="archiveBookmark(bm.tweetId)"
+              >Archive</button>
+              <button
+                v-else
+                class="xbm-unarchive-btn"
+                @click.stop="unarchiveBookmark(bm.tweetId)"
+              >Unarchive</button>
+            </div>
           </div>
 
           <!-- Notes -->
@@ -726,21 +744,6 @@ defineExpose({ reset });
             @change="updateNotes(bm.tweetId, ($event.target as HTMLTextAreaElement).value)"
             @click.stop
           ></textarea>
-
-          <!-- Actions -->
-          <div class="xbm-detail-actions">
-            <button class="xbm-link-btn" @click.stop="openInBackground(bm.tweetUrl)">Open on X</button>
-            <button
-              v-if="!bm.archived"
-              class="xbm-archive-btn"
-              @click.stop="archiveBookmark(bm.tweetId)"
-            >Archive</button>
-            <button
-              v-else
-              class="xbm-unarchive-btn"
-              @click.stop="unarchiveBookmark(bm.tweetId)"
-            >Unarchive</button>
-          </div>
         </div>
       </div>
 
@@ -1155,8 +1158,8 @@ defineExpose({ reset });
 .xbm-row {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: 7px;
+  padding: 6px 12px;
   cursor: pointer;
   transition: background 0.1s;
 }
@@ -1166,14 +1169,14 @@ defineExpose({ reset });
 }
 
 .xbm-avatar {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   color: #fff;
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 700;
   flex-shrink: 0;
   margin-top: 1px;
@@ -1187,44 +1190,48 @@ defineExpose({ reset });
 
 .xbm-row-top {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 2px;
+  align-items: baseline;
+  gap: 4px;
+  margin-bottom: 1px;
 }
 
 .xbm-author-name {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 700;
   color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 
 .xbm-author-handle {
-  font-size: 10px;
+  font-size: 9.5px;
   font-family: var(--font-mono);
   color: var(--accent-green);
   white-space: nowrap;
+  font-weight: 600;
 }
 
 .xbm-tweet-age {
-  font-size: 10px;
+  font-size: 9.5px;
   font-family: var(--font-mono);
+  font-weight: 700;
   color: var(--accent-amber);
   margin-left: auto;
   flex-shrink: 0;
 }
 
 .xbm-row-text {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-secondary);
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
-  line-height: 1.5;
+  line-height: 1.35;
   letter-spacing: 0.01em;
-  padding-left: 8px;
-  border-left: 2px solid rgba(5, 150, 105, 0.15);
-  margin-top: 3px;
+  padding-left: 7px;
+  border-left: 2px solid rgba(5, 150, 105, 0.2);
+  margin-top: 2px;
 }
 
 .xbm-row-meta {
@@ -1271,23 +1278,22 @@ defineExpose({ reset });
 
 /* -- Expanded detail -- */
 .xbm-detail {
-  padding: 0 12px 10px 48px;
+  padding: 0 12px 6px 43px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
 .xbm-detail-text {
-  font-size: 13px;
+  font-size: 11.5px;
   color: var(--text-primary);
-  line-height: 1.65;
-  white-space: pre-wrap;
+  line-height: 1.3;
   word-break: break-word;
-  letter-spacing: 0.015em;
-  padding: 10px 14px;
+  letter-spacing: 0.01em;
+  padding: 5px 9px;
   background: rgba(245, 244, 238, 0.6);
   border-left: 3px solid var(--accent-green);
-  border-radius: 0 4px 4px 0;
+  border-radius: 0 3px 3px 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
@@ -1329,10 +1335,12 @@ defineExpose({ reset });
 
 .xbm-detail-timestamps {
   display: flex;
-  gap: 12px;
-  font-size: 9px;
+  gap: 10px;
+  font-size: 8.5px;
   font-family: var(--font-mono);
   color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .xbm-detail-timestamps span {
@@ -1343,15 +1351,15 @@ defineExpose({ reset });
 
 .xbm-media-grid {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 
 .xbm-media-thumb {
-  width: 80px;
-  height: 60px;
+  width: 52px;
+  height: 38px;
   object-fit: cover;
-  border-radius: 4px;
+  border-radius: 3px;
   border: 1px solid var(--border-light);
   cursor: pointer;
 }
@@ -1363,12 +1371,16 @@ defineExpose({ reset });
 }
 
 .xbm-video-btn {
-  padding: 3px 10px;
+  padding: 2px 8px;
   background: var(--bg-alt);
   border: 1px solid var(--border-light);
   border-radius: 3px;
   cursor: pointer;
-  font-size: 10px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--text-secondary);
   transition: all 0.12s;
 }
@@ -1443,19 +1455,28 @@ defineExpose({ reset });
   border: 1px solid rgba(220, 38, 38, 0.15);
 }
 
+.xbm-detail-tags-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .xbm-detail-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 3px;
   align-items: center;
+  flex: 1;
+  min-width: 0;
 }
 
 .xbm-tag-input {
-  padding: 2px 6px;
+  padding: 1px 5px;
   border: 1px dashed var(--border-light);
   border-radius: 3px;
-  font-size: 10px;
-  width: 80px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  width: 70px;
   background: transparent;
   color: var(--text-primary);
   outline: none;
@@ -1467,12 +1488,13 @@ defineExpose({ reset });
 
 .xbm-notes {
   width: 100%;
-  min-height: 40px;
-  padding: 6px 8px;
+  min-height: 26px;
+  max-height: 52px;
+  padding: 3px 7px;
   border: 1px solid var(--border-light);
   border-radius: 3px;
   font-size: 10px;
-  font-family: inherit;
+  font-family: var(--font-mono);
   color: var(--text-primary);
   background: var(--bg-page);
   resize: vertical;
@@ -1485,18 +1507,25 @@ defineExpose({ reset });
 
 .xbm-detail-actions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .xbm-link-btn {
-  font-size: 10px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--accent-green);
   text-decoration: none;
-  padding: 2px 8px;
+  padding: 2px 7px;
   border: 1px solid var(--accent-green);
   border-radius: 3px;
   transition: all 0.12s;
+  cursor: pointer;
+  background: none;
 }
 
 .xbm-link-btn:hover {
@@ -1505,9 +1534,13 @@ defineExpose({ reset });
 }
 
 .xbm-archive-btn {
-  font-size: 10px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--accent-red);
-  padding: 2px 8px;
+  padding: 2px 7px;
   border: 1px solid rgba(220, 38, 38, 0.3);
   border-radius: 3px;
   background: none;
@@ -1521,9 +1554,13 @@ defineExpose({ reset });
 }
 
 .xbm-unarchive-btn {
-  font-size: 10px;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--accent-amber);
-  padding: 2px 8px;
+  padding: 2px 7px;
   border: 1px solid rgba(217, 119, 6, 0.3);
   border-radius: 3px;
   background: none;

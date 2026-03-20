@@ -463,7 +463,7 @@ storageManager.workingState.currentSessionId = newId;
 - Scrollable bookmark list with infinite scroll (IntersectionObserver, paginated at 100)
 - Collapsed row: author avatar circle, @handle, display name, truncated text with green left border, relative timestamp, media badges, tag pills
 - Tweet text formatting: @mentions highlighted green, URLs in amber, #hashtags in green; emojis preserved natively
-- Click to expand: full text in blockquote-style panel (green left border, beige background, 13px/1.65 line-height), image thumbnails, tag editor (add/remove inline), notes textarea, archive button, "Open on X" link
+- Click to expand: full text in compact blockquote panel (green left border, beige background, 11.5px/1.3 line-height), timestamps, media thumbnails, tags+actions row (inline), notes textarea, video download — optimized for information density within Chrome popup height constraints
 - Video bookmarks: "Download Video" button (uses native messaging host), "Copy URL" fallback
 - Download states: downloading spinner, "Downloaded ✓", error with retry
 - Empty state with sync instructions
