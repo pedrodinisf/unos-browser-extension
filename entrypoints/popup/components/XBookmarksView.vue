@@ -1154,6 +1154,10 @@ defineExpose({ reset });
   background: var(--bg-card);
 }
 
+.xbm-card.expanded .xbm-row-text {
+  display: none;
+}
+
 /* -- Collapsed row -- */
 .xbm-row {
   display: flex;
@@ -1222,7 +1226,7 @@ defineExpose({ reset });
 
 .xbm-row-text {
   font-size: 11px;
-  color: var(--text-secondary);
+  color: #4A4A4A;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -1286,7 +1290,7 @@ defineExpose({ reset });
 
 .xbm-detail-text {
   font-size: 11.5px;
-  color: var(--text-primary);
+  color: #1A1A1A;
   line-height: 1.3;
   word-break: break-word;
   letter-spacing: 0.01em;
@@ -1381,7 +1385,7 @@ defineExpose({ reset });
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--text-secondary);
+  color: #3D3D3D;
   transition: all 0.12s;
 }
 
@@ -1478,7 +1482,7 @@ defineExpose({ reset });
   font-family: var(--font-mono);
   width: 70px;
   background: transparent;
-  color: var(--text-primary);
+  color: #1A1A1A;
   outline: none;
 }
 
@@ -1495,7 +1499,7 @@ defineExpose({ reset });
   border-radius: 3px;
   font-size: 10px;
   font-family: var(--font-mono);
-  color: var(--text-primary);
+  color: #1A1A1A;
   background: var(--bg-page);
   resize: vertical;
   outline: none;
