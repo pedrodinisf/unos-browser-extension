@@ -636,3 +636,70 @@ function createMockTab(overrides: Partial<TrackedTab> = {}): TrackedTab {
 // Usage
 const tab = createMockTab({ title: 'Custom Title' });
 ```
+
+## Future: X Bookmark Content Triager
+
+Planned sub-agent / pipeline that analyzes the full content of each bookmarked X post.
+The triager receives exported bookmark data and enriches it with deep content analysis.
+
+### Phase 1 — Extraction Improvements (content script)
+
+These extract more data from the DOM during sync, stored in `RawTweetData` / `XBookmark`:
+
+| Field | Source | Notes |
+|---|---|---|
+| `authorProfileImageUrl` | `img` inside User-Name link | Avatar for UI + author fingerprinting |
+| `engagementMetrics` (likes, retweets, replies, views) | `[data-testid="like"]` etc., parse aria-labels | Signal quality / virality |
+| `quotedTweetId` / `quotedTweetText` | Recurse into `[data-testid="quoteTweet"]` block | Full quote chain context |
+| `replyToHandle` / `replyToTweetId` | "Replying to" element above tweet text | Thread detection |
+| `cardUrl` / `cardTitle` / `cardDescription` | `[data-testid="card.wrapper"]` | Link preview metadata |
+| `hashtags` / `mentions` / `embeddedUrls` | Parse `<a>` elements inside `[data-testid="tweetText"]` | Structured from text |
+| `mediaType` per media item | Distinguish `tweetPhoto` vs `videoPlayer` vs GIF | Content classification |
+| `altText` | `img.alt` attribute on media | Accessibility + image description |
+
+### Phase 2 — Post-processing Modules (runs outside content script)
+
+These analyze downloaded / fetched content after sync:
+
+| Module | Input | Output | Tech |
+|---|---|---|---|
+| **Text Classifier** | Tweet text | Topics, sentiment, language, intent | LLM or lightweight NLP |
+| **Image Analyzer** | Downloaded images from `mediaUrls` | Descriptions, OCR text, objects, scene | Vision model (Claude, etc.) |
+| **Video Analyzer** | Downloaded video via yt-dlp | Keyframe descriptions, scene summary | Vision model on sampled frames |
+| **Audio Transcriber** | Audio track from downloaded video | Full transcript, speaker labels | Whisper / mlx-audio |
+| **Thread Reconstructor** | `replyToTweetId` chains | Full conversation context | X API or page navigation |
+| **Comment Sampler** | Top replies to a tweet | Community reaction summary | X API |
+| **Link Expander** | `embeddedUrls` / `cardUrl` | Page title, summary, domain category | Fetch + readability extraction |
+
+### Phase 3 — Triager Agent
+
+Orchestrator that runs Phase 2 modules and produces a structured analysis per bookmark:
+
+```
+XBookmark → Triager Agent → EnrichedBookmark {
+  contentSummary: string        // 1-2 sentence digest
+  topics: string[]              // auto-generated topic tags
+  sentiment: 'positive' | 'negative' | 'neutral' | 'mixed'
+  contentType: 'thread' | 'news' | 'opinion' | 'tutorial' | 'meme' | ...
+  mediaTranscripts: string[]    // video/audio transcriptions
+  imageDescriptions: string[]   // vision model outputs
+  actionItems: string[]         // extracted TODOs, links to follow up
+  relatedBookmarks: string[]    // tweetIds of semantically similar bookmarks
+  triageScore: number           // 0-100 relevance/quality score
+  triagedAt: number             // timestamp
+}
+```
+
+### Schema Changes Needed
+
+- Add new fields to `XBookmark` interface and Dexie schema (version 3)
+- New `xBookmarkAnalysis` table for triager outputs (keeps raw bookmark clean)
+- Index on `topics` (multi-entry) and `triageScore` for filtered views
+
+### Known Limitations
+
+- Full tweet text for long posts requires clicking "Show more" (partially fixed: content script now auto-expands)
+- Engagement metrics may not be available if X changes aria-label format
+- Video/audio analysis requires download first (native host + yt-dlp)
+- X API access would improve thread/comment data but is not required for MVP
+- Rate limiting needed for vision/LLM calls during batch analysis

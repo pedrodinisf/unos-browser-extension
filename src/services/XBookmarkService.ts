@@ -163,9 +163,12 @@ export class XBookmarkService {
         const existing = await db.xBookmarks.where('tweetId').equals(tweetId).first();
 
         if (existing) {
-          // Update lastSeenAt only — preserve user metadata
+          // Update lastSeenAt and content — preserve user metadata (tags, notes, categories)
           await db.xBookmarks.where('tweetId').equals(tweetId).modify({
             lastSeenAt: now,
+            // Backfill author info if newly extracted (fixes empty handles from older syncs)
+            ...(tweet.authorHandle ? { authorHandle: tweet.authorHandle } : {}),
+            ...(tweet.authorName ? { authorName: tweet.authorName } : {}),
             // Update content in case tweet was edited
             text: tweet.text,
             mediaUrls: tweet.mediaUrls,

@@ -17,21 +17,34 @@ export default defineContentScript({
         const textEl = article.querySelector('[data-testid="tweetText"]');
         const text = textEl?.textContent || '';
 
-        // Author info: multiline text with display name + @handle
+        // Author info: query specific DOM elements within User-Name
+        // X renders: <a role="link">(display name)</a> ... <a role="link">(@handle)</a> · <time>
         const userNameEl = article.querySelector('[data-testid="User-Name"]');
         let authorHandle = '';
         let authorName = '';
         if (userNameEl) {
-          const parts = userNameEl.textContent?.split('\n') || [];
-          // First non-empty part is the display name
-          for (const part of parts) {
-            const trimmed = part.trim();
-            if (!trimmed) continue;
-            if (trimmed.startsWith('@')) {
-              // Handle may include · and timestamp suffix, take only the @part
-              authorHandle = trimmed.split('·')[0]?.trim() || trimmed;
-            } else if (!authorName) {
-              authorName = trimmed;
+          // Primary: find <a role="link"> elements — first non-@ is display name, @ prefixed is handle
+          const links = userNameEl.querySelectorAll('a[role="link"]');
+          for (const link of links) {
+            const linkText = (link.textContent || '').trim();
+            if (linkText.startsWith('@') && !authorHandle) {
+              authorHandle = linkText;
+            } else if (!linkText.startsWith('@') && !authorName && linkText.length > 0) {
+              authorName = linkText;
+            }
+          }
+
+          // Fallback: regex parse concatenated textContent (e.g. "Display Name@handle·Mar 15")
+          if (!authorHandle) {
+            const fullText = userNameEl.textContent || '';
+            const match = fullText.match(/@(\w{1,15})/);
+            if (match) authorHandle = '@' + match[1];
+          }
+          if (!authorName && authorHandle) {
+            const fullText = userNameEl.textContent || '';
+            const idx = fullText.indexOf(authorHandle.replace(/^@/, ''));
+            if (idx > 0) {
+              authorName = fullText.substring(0, idx).replace(/@$/, '').trim();
             }
           }
         }
@@ -69,8 +82,11 @@ export default defineContentScript({
         // Video flag
         const hasVideo = !!article.querySelector('[data-testid="videoPlayer"]');
 
-        // Quote tweet flag
-        const isQuoteTweet = !!article.querySelector('[data-testid="quoteTweet"]');
+        // Quote tweet: check testid + heuristic (multiple tweetText elements = quoted content)
+        const isQuoteTweet = !!(
+          article.querySelector('[data-testid="quoteTweet"]') ||
+          article.querySelectorAll('[data-testid="tweetText"]').length > 1
+        );
 
         return {
           tweetId,
@@ -101,13 +117,30 @@ export default defineContentScript({
 
       switch (msg.action) {
         case 'EXTRACT_TWEETS': {
-          const articles = document.querySelectorAll('article[data-testid="tweet"]');
-          const tweets: RawTweetData[] = [];
-          for (const article of articles) {
-            const data = extractTweetData(article);
-            if (data) tweets.push(data);
+          const doExtract = () => {
+            const articles = document.querySelectorAll('article[data-testid="tweet"]');
+            const tweets: RawTweetData[] = [];
+            for (const article of articles) {
+              const data = extractTweetData(article);
+              if (data) tweets.push(data);
+            }
+            sendResponse({ tweets });
+          };
+
+          // Expand truncated long tweets before extraction
+          const showMoreButtons = document.querySelectorAll(
+            '[data-testid="tweet-text-show-more-link"]',
+          );
+          if (showMoreButtons.length > 0) {
+            for (const btn of showMoreButtons) {
+              (btn as HTMLElement).click();
+            }
+            // Wait for expanded text to render
+            setTimeout(doExtract, 300);
+            return true; // async response
           }
-          sendResponse({ tweets });
+
+          doExtract();
           break;
         }
 
