@@ -525,6 +525,13 @@ export default defineBackground(() => {
             break;
           }
 
+          case 'X_GET_BOOKMARK_METRICS': {
+            const xMetricsService = getXBookmarkService();
+            const metrics = await xMetricsService.getMetrics();
+            sendResponse({ success: true, data: metrics });
+            break;
+          }
+
           case 'BULK_ADD_TAG': {
             const { persistentIds, tag } = message as { persistentIds: string[]; tag: string };
             const db = storageManager.getDB();

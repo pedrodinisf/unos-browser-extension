@@ -352,6 +352,26 @@ export interface XSyncState {
 }
 
 /**
+ * Aggregated metrics for X bookmark analytics
+ */
+export interface XBookmarkMetrics {
+  summary: {
+    totalBookmarks: number;
+    totalArchived: number;
+    uniqueAuthors: number;
+    bookmarksPerWeek: number;
+    mediaPercent: number;
+    videoPercent: number;
+    taggedPercent: number;
+    quoteTweetPercent: number;
+  };
+  acquisitionTimeline: Array<{ weekLabel: string; count: number }>;
+  topAuthors: Array<{ handle: string; name: string; count: number }>;
+  contentComposition: { textOnly: number; withImages: number; withVideo: number };
+  tweetAgeDistribution: Array<{ monthLabel: string; count: number }>;
+}
+
+/**
  * Raw tweet data extracted from DOM by the content script
  */
 export interface RawTweetData {

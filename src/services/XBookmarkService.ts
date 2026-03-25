@@ -1,5 +1,5 @@
 import { getDatabase } from '../db/schema';
-import type { XBookmark, XSyncState, RawTweetData } from '../db/types';
+import type { XBookmark, XBookmarkMetrics, XSyncState, RawTweetData } from '../db/types';
 
 const SCROLL_DELAY_MS = 2000;
 const CONSECUTIVE_KNOWN_THRESHOLD = 5;
@@ -443,6 +443,116 @@ export class XBookmarkService {
     return { data: lines.join('\n'), filename: `x-bookmarks-${date}.md` };
   }
 
+  /**
+   * Compute aggregated metrics for the LOG tab
+   */
+  async getMetrics(): Promise<XBookmarkMetrics> {
+    const db = getDatabase();
+    const all = await db.xBookmarks.toArray();
+    const active = all.filter((b) => !b.archived);
+    const totalArchived = all.length - active.length;
+
+    // Single-pass aggregation
+    const authorMap = new Map<string, { name: string; count: number }>();
+    const weekBuckets = new Map<string, number>();
+    const monthBuckets = new Map<string, number>();
+    let mediaCount = 0;
+    let videoCount = 0;
+    let taggedCount = 0;
+    let quoteCount = 0;
+    let textOnly = 0;
+    let withImages = 0;
+    let withVideo = 0;
+    let earliestSeen = Infinity;
+
+    for (const b of active) {
+      // Authors (skip empty or @-only handles)
+      const handle = b.authorHandle?.trim();
+      if (handle && handle !== '@') {
+        const existing = authorMap.get(handle);
+        if (existing) {
+          existing.count++;
+        } else {
+          authorMap.set(handle, { name: b.authorName, count: 1 });
+        }
+      }
+
+      // Counters
+      const hasMedia = b.mediaUrls.length > 0;
+      if (hasMedia) mediaCount++;
+      if (b.hasVideo) videoCount++;
+      if (b.tags.length > 0) taggedCount++;
+      if (b.isQuoteTweet) quoteCount++;
+
+      // Content composition (mutually exclusive: video > images > text)
+      if (b.hasVideo) {
+        withVideo++;
+      } else if (hasMedia) {
+        withImages++;
+      } else {
+        textOnly++;
+      }
+
+      // Acquisition week bucket (by firstSeenAt)
+      if (b.firstSeenAt < earliestSeen) earliestSeen = b.firstSeenAt;
+      const wk = getWeekStart(b.firstSeenAt);
+      weekBuckets.set(wk, (weekBuckets.get(wk) || 0) + 1);
+
+      // Tweet age month bucket (by timestamp ISO string)
+      if (b.timestamp) {
+        const month = b.timestamp.substring(0, 7); // "YYYY-MM"
+        monthBuckets.set(month, (monthBuckets.get(month) || 0) + 1);
+      }
+    }
+
+    const total = active.length;
+    const pct = (n: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0);
+
+    // Weeks since first bookmark
+    const weeksSinceFirst =
+      total > 0 ? Math.max(1, (Date.now() - earliestSeen) / (7 * 24 * 60 * 60 * 1000)) : 1;
+
+    // Acquisition timeline: last 12 weeks
+    const acquisitionTimeline: XBookmarkMetrics['acquisitionTimeline'] = [];
+    const now = new Date();
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now);
+      d.setUTCDate(d.getUTCDate() - i * 7);
+      const wk = getWeekStart(d.getTime());
+      const label = formatWeekLabel(wk);
+      acquisitionTimeline.push({ weekLabel: label, count: weekBuckets.get(wk) || 0 });
+    }
+
+    // Top 8 authors
+    const topAuthors = [...authorMap.entries()]
+      .map(([handle, { name, count }]) => ({ handle, name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8);
+
+    // Tweet age: last 12 months with data, newest first
+    const tweetAgeDistribution = [...monthBuckets.entries()]
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .slice(0, 12)
+      .map(([monthLabel, count]) => ({ monthLabel, count }));
+
+    return {
+      summary: {
+        totalBookmarks: total,
+        totalArchived,
+        uniqueAuthors: authorMap.size,
+        bookmarksPerWeek: Math.round((total / weeksSinceFirst) * 10) / 10,
+        mediaPercent: pct(mediaCount),
+        videoPercent: pct(videoCount),
+        taggedPercent: pct(taggedCount),
+        quoteTweetPercent: pct(quoteCount),
+      },
+      acquisitionTimeline,
+      topAuthors,
+      contentComposition: { textOnly, withImages, withVideo },
+      tweetAgeDistribution,
+    };
+  }
+
   // ── Private helpers ──
 
   private async findOrCreateBookmarksTab(): Promise<number> {
@@ -489,6 +599,21 @@ export class XBookmarkService {
     if (error) update.xBookmarks_syncError = error;
     await chrome.storage.local.set(update);
   }
+}
+
+/** Get ISO date string (YYYY-MM-DD) of the Monday of the week containing `ms` (UTC) */
+function getWeekStart(ms: number): string {
+  const d = new Date(ms);
+  const day = d.getUTCDay(); // 0=Sun..6=Sat
+  d.setUTCDate(d.getUTCDate() - ((day + 6) % 7));
+  return d.toISOString().substring(0, 10);
+}
+
+/** Format a YYYY-MM-DD week start as "Mon DD" */
+function formatWeekLabel(isoDate: string): string {
+  const d = new Date(isoDate + 'T00:00:00Z');
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${months[d.getUTCMonth()]} ${d.getUTCDate()}`;
 }
 
 // Singleton

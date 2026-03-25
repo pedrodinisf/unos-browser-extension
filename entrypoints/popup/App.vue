@@ -8,6 +8,7 @@ import ScrollCaptureDialog from './components/ScrollCaptureDialog.vue';
 import DebugPanel from './components/DebugPanel.vue';
 import AllWindowsView from './components/AllWindowsView.vue';
 import XBookmarksView from './components/XBookmarksView.vue';
+import XMetricsView from './components/XMetricsView.vue';
 
 // State
 const currentTab = ref<TrackedTab | null>(null);
@@ -19,7 +20,7 @@ const showMetadataPanel = ref(false);
 const showExportDialog = ref(false);
 const showUrlGrepperDialog = ref(false);
 const showScrollCaptureDialog = ref(false);
-const activeView = ref<'recent' | 'windows' | 'xbookmarks' | 'debug'>('xbookmarks');
+const activeView = ref<'recent' | 'windows' | 'xbookmarks' | 'xmetrics' | 'debug'>('xbookmarks');
 const chromeMemoryMB = ref<number | null>(null);
 
 // View refs for reset
@@ -27,8 +28,9 @@ const xBookmarksRef = ref<InstanceType<typeof XBookmarksView> | null>(null);
 const recentSectionRef = ref<HTMLElement | null>(null);
 const windowsRef = ref<InstanceType<typeof AllWindowsView> | null>(null);
 const debugRef = ref<InstanceType<typeof DebugPanel> | null>(null);
+const xMetricsRef = ref<InstanceType<typeof XMetricsView> | null>(null);
 
-type ViewName = 'recent' | 'windows' | 'xbookmarks' | 'debug';
+type ViewName = 'recent' | 'windows' | 'xbookmarks' | 'xmetrics' | 'debug';
 
 function switchView(view: ViewName) {
   if (activeView.value === view) {
@@ -49,6 +51,9 @@ function resetView(view: ViewName) {
       break;
     case 'windows':
       windowsRef.value?.reset?.();
+      break;
+    case 'xmetrics':
+      xMetricsRef.value?.reset?.();
       break;
     case 'debug':
       debugRef.value?.reset?.();
@@ -469,6 +474,11 @@ onUnmounted(() => {
         ><span class="view-tab-icon">&#x2715;</span>MARKS</button>
         <button
           class="view-tab"
+          :class="{ active: activeView === 'xmetrics' }"
+          @click="switchView('xmetrics')"
+        ><span class="view-tab-icon">&#x25A6;</span>LOG</button>
+        <button
+          class="view-tab"
           :class="{ active: activeView === 'recent' }"
           @click="switchView('recent')"
         ><span class="view-tab-icon">&#x25F7;</span>RECENT</button>
@@ -488,6 +498,13 @@ onUnmounted(() => {
       <XBookmarksView
         v-show="activeView === 'xbookmarks'"
         ref="xBookmarksRef"
+        class="view-content"
+      />
+
+      <!-- X Metrics View -->
+      <XMetricsView
+        v-show="activeView === 'xmetrics'"
+        ref="xMetricsRef"
         class="view-content"
       />
 
