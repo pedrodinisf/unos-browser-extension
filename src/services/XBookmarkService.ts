@@ -192,6 +192,8 @@ export class XBookmarkService {
             tags: [],
             notes: '',
             archived: false,
+            ingestedAt: null,
+            ingestionPath: '',
           });
           newCount++;
         }

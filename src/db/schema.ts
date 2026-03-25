@@ -233,6 +233,98 @@ export class TabTrackerDatabase extends Dexie {
         ++id
       `.replace(/\s+/g, ''),
     });
+
+    // Schema version 3 — adds ingestion tracking to xBookmarks
+    this.version(3).stores({
+      tabs: `
+        ++id,
+        &persistentId,
+        chromeTabId,
+        chromeWindowId,
+        urlHash,
+        sessionId,
+        createdAt,
+        lastActivatedAt,
+        isSaved,
+        closedAt,
+        [sessionId+chromeWindowId],
+        [urlHash+sessionId],
+        *tags
+      `.replace(/\s+/g, ''),
+
+      tabVisits: `
+        ++id,
+        tabPersistentId,
+        sessionId,
+        urlHash,
+        activatedAt,
+        [tabPersistentId+activatedAt],
+        [sessionId+activatedAt]
+      `.replace(/\s+/g, ''),
+
+      windows: `
+        ++id,
+        &persistentId,
+        chromeWindowId,
+        sessionId,
+        incognito,
+        createdAt,
+        closedAt,
+        [sessionId+incognito]
+      `.replace(/\s+/g, ''),
+
+      windowFocusEvents: `
+        ++id,
+        windowPersistentId,
+        sessionId,
+        focusedAt
+      `.replace(/\s+/g, ''),
+
+      sessions: `
+        id,
+        isActive,
+        isSaved,
+        startedAt,
+        expiresAt,
+        *tags
+      `.replace(/\s+/g, ''),
+
+      tabRelationships: `
+        ++id,
+        sourceTabPersistentId,
+        targetTabPersistentId,
+        relationshipType,
+        [sourceTabPersistentId+relationshipType],
+        [targetTabPersistentId+relationshipType]
+      `.replace(/\s+/g, ''),
+
+      tags: `
+        ++id,
+        &name,
+        usageCount
+      `.replace(/\s+/g, ''),
+
+      // xBookmarks: added ingestedAt index for querying un-ingested bookmarks
+      xBookmarks: `
+        ++id,
+        &tweetId,
+        timestamp,
+        authorHandle,
+        *tags,
+        archived,
+        ingestedAt
+      `.replace(/\s+/g, ''),
+
+      xSyncState: `
+        ++id
+      `.replace(/\s+/g, ''),
+    }).upgrade(tx => {
+      // Backfill new fields on existing bookmarks
+      return tx.table('xBookmarks').toCollection().modify(bookmark => {
+        if (bookmark.ingestedAt === undefined) bookmark.ingestedAt = null;
+        if (bookmark.ingestionPath === undefined) bookmark.ingestionPath = '';
+      });
+    });
   }
 }
 

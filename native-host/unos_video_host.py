@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
-UNOS Native Messaging Host — downloads X/Twitter videos via yt-dlp.
+UNOS Native Messaging Host — downloads X/Twitter videos and ingests bookmark content.
 
 Chrome launches this script via Native Messaging (through launch.sh).
-It reads one JSON message from stdin (length-prefixed), runs yt-dlp,
+It reads one JSON message from stdin (length-prefixed), processes it,
 and writes one JSON response to stdout (length-prefixed).
 
 Protocol: 4 bytes (uint32 LE) message length, then JSON bytes.
 No third-party imports — only stdlib. yt-dlp runs as a subprocess
 from the local .venv (falls back to system PATH).
+
+Actions:
+  - download_video:    Download video via yt-dlp (existing)
+  - ingest_bookmark:   Create folder, download images at max quality, write metadata+text
+  - validate_folder:   Check/create a folder path, return resolved absolute path
 """
 import json
 import logging
@@ -20,6 +25,8 @@ import subprocess
 import sys
 import tempfile
 import traceback
+import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Resolve paths relative to this script's directory
@@ -35,6 +42,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("unos-native-host")
+
+# User-Agent for image downloads (X CDN may reject bare urllib requests)
+UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 
 
 def read_message():
@@ -54,7 +64,6 @@ def send_response(obj):
     sys.stdout.buffer.write(encoded)
     sys.stdout.buffer.flush()
     # Brief pause so Chrome can read the response before the process exits.
-    # Without this, Chrome may report "Native host has exited" on fast completions.
     import time
     time.sleep(0.1)
 
@@ -88,6 +97,199 @@ def find_executable(name):
     if venv_path.is_file() and os.access(venv_path, os.X_OK):
         return str(venv_path)
     return shutil.which(name)
+
+
+# ── Image URL helpers ──
+
+
+def maximize_image_quality(url):
+    """Transform X/Twitter image URL to request maximum quality (name=orig)."""
+    if "pbs.twimg.com" in url:
+        # Replace name=small/medium/large/240x240/360x360/etc with name=orig
+        if "name=" in url:
+            return re.sub(r"name=\w+", "name=orig", url)
+        # If no name param, append it
+        separator = "&" if "?" in url else "?"
+        return url + separator + "name=orig"
+    return url
+
+
+def guess_extension(url):
+    """Guess file extension from URL (format param or path)."""
+    # Check format= param first
+    fmt_match = re.search(r"format=(\w+)", url)
+    if fmt_match:
+        fmt = fmt_match.group(1).lower()
+        return f".{fmt}" if fmt in ("jpg", "jpeg", "png", "gif", "webp") else ".jpg"
+    # Fall back to path extension
+    path = url.split("?")[0]
+    ext = Path(path).suffix.lower()
+    return ext if ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4") else ".jpg"
+
+
+def download_file(url, filepath):
+    """Download a file from URL to local path using urllib."""
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=60) as response:
+        with open(filepath, "wb") as f:
+            while True:
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                f.write(chunk)
+    return os.path.getsize(filepath)
+
+
+# ── Actions ──
+
+
+def action_validate_folder(msg):
+    """Validate and optionally create a folder path. Returns resolved absolute path."""
+    folder = msg.get("folder", "")
+    if not folder:
+        return {"success": False, "error": "No folder path provided"}
+
+    try:
+        resolved = Path(folder).expanduser().resolve()
+        resolved.mkdir(parents=True, exist_ok=True)
+
+        # Check writable
+        test_file = resolved / ".unos_write_test"
+        test_file.write_text("ok")
+        test_file.unlink()
+
+        return {
+            "success": True,
+            "resolvedPath": str(resolved),
+            "exists": True,
+            "writable": True,
+        }
+    except PermissionError:
+        return {"success": False, "error": f"Permission denied: {folder}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def action_ingest_bookmark(msg):
+    """
+    Ingest a single X bookmark:
+      1. Create {rootDir}/{tweetId}/ folder
+      2. Download images at maximum quality
+      3. Write metadata.json and content.txt
+      4. Optionally download video via yt-dlp (if cookies provided and hasVideo)
+
+    Returns list of created files.
+    """
+    bookmark = msg.get("bookmark", {})
+    root_dir = msg.get("rootDir", "")
+    cookies = msg.get("cookies", [])
+
+    tweet_id = bookmark.get("tweetId", "")
+    if not tweet_id:
+        return {"success": False, "error": "No tweetId in bookmark"}
+    if not root_dir:
+        return {"success": False, "error": "No rootDir specified"}
+
+    try:
+        root = Path(root_dir).expanduser().resolve()
+        tweet_dir = root / tweet_id
+        tweet_dir.mkdir(parents=True, exist_ok=True)
+        log.info("Ingesting %s into %s", tweet_id, tweet_dir)
+
+        files_created = []
+
+        # ── 1. Write metadata.json ──
+        metadata = {
+            "tweetId": bookmark.get("tweetId"),
+            "authorHandle": bookmark.get("authorHandle", ""),
+            "authorName": bookmark.get("authorName", ""),
+            "text": bookmark.get("text", ""),
+            "timestamp": bookmark.get("timestamp", ""),
+            "tweetUrl": bookmark.get("tweetUrl", ""),
+            "mediaUrls": bookmark.get("mediaUrls", []),
+            "hasVideo": bookmark.get("hasVideo", False),
+            "isQuoteTweet": bookmark.get("isQuoteTweet", False),
+            "tags": bookmark.get("tags", []),
+            "notes": bookmark.get("notes", ""),
+            "categories": bookmark.get("categories", []),
+            "ingestedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        meta_path = tweet_dir / "metadata.json"
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+        files_created.append("metadata.json")
+
+        # ── 2. Write content.txt ──
+        handle = bookmark.get("authorHandle", "")
+        name = bookmark.get("authorName", "")
+        text_lines = [
+            f"{name} ({handle})",
+            bookmark.get("timestamp", ""),
+            bookmark.get("tweetUrl", ""),
+            "",
+            bookmark.get("text", ""),
+        ]
+        if bookmark.get("tags"):
+            text_lines.append("")
+            text_lines.append("Tags: " + ", ".join(bookmark["tags"]))
+        if bookmark.get("notes"):
+            text_lines.append("")
+            text_lines.append("Notes: " + bookmark["notes"])
+
+        content_path = tweet_dir / "content.txt"
+        with open(content_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(text_lines))
+        files_created.append("content.txt")
+
+        # ── 3. Download images at max quality ──
+        images_downloaded = []
+        for i, url in enumerate(bookmark.get("mediaUrls", [])):
+            # Skip video thumbnails — we'll get the actual video
+            if bookmark.get("hasVideo") and "video_thumb" in url:
+                continue
+
+            max_url = maximize_image_quality(url)
+            ext = guess_extension(max_url)
+            filename = f"img_{i + 1:03d}{ext}"
+            filepath = tweet_dir / filename
+
+            try:
+                size = download_file(max_url, str(filepath))
+                images_downloaded.append(filename)
+                files_created.append(filename)
+                log.info("  Downloaded %s (%d bytes)", filename, size)
+            except Exception as e:
+                log.warning("  Failed to download image %s: %s", max_url, e)
+
+        # ── 4. Download video if applicable ──
+        video_file = None
+        if bookmark.get("hasVideo") and bookmark.get("tweetUrl"):
+            if cookies:
+                log.info("  Downloading video for %s", tweet_id)
+                video_result = download_video(
+                    bookmark["tweetUrl"], cookies, str(tweet_dir)
+                )
+                if video_result.get("success"):
+                    video_file = video_result.get("filePath")
+                    vname = Path(video_file).name if video_file else None
+                    if vname:
+                        files_created.append(vname)
+                else:
+                    log.warning("  Video download failed: %s", video_result.get("error"))
+            else:
+                log.info("  Skipping video download (no cookies)")
+
+        return {
+            "success": True,
+            "tweetDir": str(tweet_dir),
+            "filesCreated": files_created,
+            "imagesDownloaded": len(images_downloaded),
+            "videoFile": video_file,
+        }
+
+    except Exception as e:
+        log.error("Ingest failed for %s: %s", tweet_id, traceback.format_exc())
+        return {"success": False, "error": str(e)}
 
 
 def download_video(url, cookies, output_dir):
@@ -217,25 +419,32 @@ def main():
     action = msg.get("action")
     log.info("Action: %s", action)
 
-    if action != "download_video":
+    if action == "download_video":
+        url = msg.get("url", "")
+        log.info("URL: %s", url)
+        if not validate_url(url):
+            log.error("Invalid URL: %s", url)
+            send_response({"success": False, "error": f"Invalid URL: {url}"})
+            return
+        cookies = msg.get("cookies", [])
+        log.info("Cookies received: %d", len(cookies))
+        output_dir = msg.get("outputDir", str(Path.home() / "Downloads"))
+        result = download_video(url, cookies, output_dir)
+        log.info("Result: %s", result)
+        send_response(result)
+
+    elif action == "validate_folder":
+        result = action_validate_folder(msg)
+        log.info("Result: %s", result)
+        send_response(result)
+
+    elif action == "ingest_bookmark":
+        result = action_ingest_bookmark(msg)
+        log.info("Result: %s", result)
+        send_response(result)
+
+    else:
         send_response({"success": False, "error": f"Unknown action: {action}"})
-        return
-
-    url = msg.get("url", "")
-    log.info("URL: %s", url)
-
-    if not validate_url(url):
-        log.error("Invalid URL: %s", url)
-        send_response({"success": False, "error": f"Invalid URL: {url}"})
-        return
-
-    cookies = msg.get("cookies", [])
-    log.info("Cookies received: %d", len(cookies))
-    output_dir = msg.get("outputDir", str(Path.home() / "Downloads"))
-
-    result = download_video(url, cookies, output_dir)
-    log.info("Result: %s", result)
-    send_response(result)
 
 
 if __name__ == "__main__":

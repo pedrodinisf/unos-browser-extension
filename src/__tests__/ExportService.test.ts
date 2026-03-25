@@ -138,6 +138,8 @@ function createMockXBookmark(overrides: Partial<XBookmark> = {}): XBookmark {
     tags: [],
     notes: '',
     archived: false,
+    ingestedAt: null,
+    ingestionPath: '',
     ...overrides,
   };
 }

@@ -143,6 +143,17 @@ Chrome assigns ephemeral numeric IDs (tab.id, window.id) that change on restart.
 - Progress tracked via `chrome.storage.local` (capture_status, capture_progress)
 - Triggered by `START_CAPTURE` message from popup
 
+**ContentIngestionService** (`src/services/ContentIngestionService.ts`)
+- Downloads all bookmark content (images, video, metadata) to a local ingestion folder
+- Per-bookmark folder: `{rootDir}/{tweetId}/metadata.json, content.txt, img_001.jpg, video.mp4, audio.m4a`
+- Images downloaded at maximum quality (URL `name=orig` transform)
+- Videos downloaded via yt-dlp (reuses native host video pipeline)
+- OS-aware default folders: `~/Documents/UNOS/x-inbox` (macOS/Linux), `%USERPROFILE%\Documents\UNOS\x-inbox` (Windows)
+- Folder validation via native host (`validate_folder` action — creates dir, checks writable)
+- Batch ingestion with progress tracking via `chrome.storage.local` (ingestion_status, ingestion_processed, ingestion_total)
+- DB tracking: `ingestedAt` and `ingestionPath` fields on `XBookmark` (schema v3)
+- Triggered by `X_INGEST_BOOKMARK` (single) or `X_INGEST_BATCH` (bulk) messages
+
 **URL Grepper** (`entrypoints/url-grepper.content.ts` + `UrlGrepperDialog.vue`)
 - Content script extracts all `<a href>` URLs from the active page
 - Popup UI toggles collection on/off, applies regex filter
@@ -306,6 +317,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 - `X_DOWNLOAD_VIDEO` - Download video via native host (fire-and-forget; params: `tweetUrl`)
 - `X_CLEAR_DOWNLOAD_STATUS` - Reset download state to idle
 
+*Content Ingestion:*
+- `X_GET_INGESTION_SETTINGS` - Get folder path, OS, default path, un-ingested count
+- `X_SET_INGESTION_FOLDER` - Validate and save ingestion folder (params: `folder`)
+- `X_INGEST_BOOKMARK` - Ingest single bookmark (fire-and-forget; params: `tweetId`)
+- `X_INGEST_BATCH` - Ingest multiple bookmarks (fire-and-forget; params: `tweetIds: string[]`)
+
 *Debugging:*
 - `PING` - Health check (returns `{ pong: true, timestamp }`)
 - `GET_DEBUG_STATS` - Get initialization status and DB counts
@@ -384,7 +401,7 @@ storageManager.workingState.currentSessionId = newId;
 - `entrypoints/x-bookmarks-sync.content.ts` - Content script for X bookmark DOM extraction
 
 **Native host** (`native-host/` source, installed to `~/Library/Application Support/UNOS/native-host/`):
-- `unos_video_host.py` - Python native messaging host for video download via yt-dlp
+- `unos_video_host.py` - Python native messaging host (actions: `download_video`, `ingest_bookmark`, `validate_folder`)
 - `launch.sh` - Bash launcher that adds Homebrew to PATH (for ffmpeg), sets up venv Python and stderr logging
 - `install.sh` - macOS installer: copies files to `~/Library/Application Support/UNOS/native-host/`, creates .venv with yt-dlp, auto-detects extension ID(s) from Chrome profiles, registers native messaging manifest
 - `requirements.txt` - Python dependencies (yt-dlp)
@@ -449,6 +466,13 @@ storageManager.workingState.currentSessionId = newId;
 - URL list display with count
 - Copy to clipboard / Download as `.txt`
 - State in `chrome.storage.local` (urlGrepper_enabled, urlGrepper_grepStr, urlGrepper_urlList)
+
+**IngestionSettingsDialog.vue** - Local content ingestion configuration:
+- OS detection badge (macOS/Windows/Linux)
+- Folder path input with "DEFAULT" button for OS-specific path
+- "Validate & Save" button — validates via native host, shows resolved path
+- Un-ingested count display with "INGEST ALL" batch button
+- NASA instrument panel styling (monospace labels, green/amber accents)
 
 **ScrollCaptureDialog.vue** - Full-page screenshot tool:
 - Scroll delay selector (300ms / 500ms / 1000ms)

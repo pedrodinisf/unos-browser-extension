@@ -351,6 +351,10 @@ export interface XBookmark {
   notes: string;
   /** Soft delete flag */
   archived: boolean;
+  /** Unix timestamp (ms) when content was ingested to local folder (null if not ingested) */
+  ingestedAt: number | null;
+  /** Local folder path where ingested content lives */
+  ingestionPath: string;
 }
 
 /**

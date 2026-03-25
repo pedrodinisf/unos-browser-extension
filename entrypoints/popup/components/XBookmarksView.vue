@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import type { XBookmark, XSyncState } from '../../../src/db/types';
+import IngestionSettingsDialog from './IngestionSettingsDialog.vue';
 
 // State
 const bookmarks = ref<XBookmark[]>([]);
@@ -18,6 +19,13 @@ const statusMsg = ref('');
 const downloadStatus = ref<'idle' | 'downloading' | 'done' | 'error'>('idle');
 const downloadTweetId = ref('');
 const downloadError = ref('');
+
+// Ingestion state
+const showIngestionSettings = ref(false);
+const ingestionStatus = ref<'idle' | 'ingesting' | 'done' | 'error'>('idle');
+const ingestionProcessed = ref(0);
+const ingestionTotal = ref(0);
+const ingestingTweetId = ref('');
 
 // Sort & filter state
 const sortBy = ref<'firstSeenAt' | 'timestamp' | 'authorHandle'>('firstSeenAt');
@@ -154,6 +162,24 @@ function onStorageChanged(changes: Record<string, chrome.storage.StorageChange>,
   }
   if (changes.xBookmarks_downloadError) {
     downloadError.value = changes.xBookmarks_downloadError.newValue || '';
+  }
+
+  // Ingestion state
+  if (changes.ingestion_status) {
+    ingestionStatus.value = changes.ingestion_status.newValue || 'idle';
+    if (changes.ingestion_status.newValue === 'done') {
+      loadData(); // Refresh to show ingested indicators
+      ingestingTweetId.value = '';
+    }
+  }
+  if (changes.ingestion_processed) {
+    ingestionProcessed.value = changes.ingestion_processed.newValue || 0;
+  }
+  if (changes.ingestion_total) {
+    ingestionTotal.value = changes.ingestion_total.newValue || 0;
+  }
+  if (changes.ingestion_currentTweetId) {
+    ingestingTweetId.value = changes.ingestion_currentTweetId.newValue || '';
   }
 }
 
@@ -295,6 +321,37 @@ async function copyTweetUrl(tweetUrl: string) {
     statusMsg.value = 'Copy failed';
     setTimeout(() => (statusMsg.value = ''), 2000);
   }
+}
+
+// Ingest a single bookmark
+async function ingestBookmark(tweetId: string) {
+  try {
+    ingestingTweetId.value = tweetId;
+    await sendMessage({ type: 'X_INGEST_BOOKMARK', tweetId });
+  } catch (err) {
+    console.error('Failed to start ingestion:', err);
+    statusMsg.value = 'Ingestion failed to start';
+    setTimeout(() => (statusMsg.value = ''), 3000);
+  }
+}
+
+// Batch ingest all un-ingested bookmarks
+async function ingestAll() {
+  const allBookmarks = await sendMessage<{ bookmarks: XBookmark[]; totalCount: number }>({
+    type: 'X_GET_BOOKMARKS',
+    includeArchived: false,
+    page: 1,
+    limit: 99999,
+  });
+  const tweetIds = allBookmarks.bookmarks
+    .filter((b) => !b.ingestedAt)
+    .map((b) => b.tweetId);
+  if (tweetIds.length === 0) {
+    statusMsg.value = 'All bookmarks already ingested';
+    setTimeout(() => (statusMsg.value = ''), 3000);
+    return;
+  }
+  await sendMessage({ type: 'X_INGEST_BATCH', tweetIds });
 }
 
 // Helpers
@@ -551,11 +608,23 @@ defineExpose({ reset });
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M4 2h5l4 4v8a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.3"/><path d="M9 2v4h4" stroke="currentColor" stroke-width="1.3"/></svg>
           <span class="xbm-icon-label">MD</span>
         </button>
+        <button class="xbm-icon-btn" @click="showIngestionSettings = true" title="Ingestion settings (download all media to local folder)">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M6.5 1.5h3L10 3.5l1.5.5 1.5-1 2 2-1 1.5.5 1.5 2 .5v3l-2 .5-.5 1.5 1 1.5-2 2-1.5-1-1.5.5-.5 2h-3l-.5-2-1.5-.5-1.5 1-2-2 1-1.5-.5-1.5-2-.5v-3l2-.5.5-1.5-1-1.5 2-2 1.5 1 1.5-.5z" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.2"/></svg>
+        </button>
       </div>
     </div>
 
     <!-- Status message -->
     <div v-if="statusMsg" class="xbm-status">{{ statusMsg }}</div>
+
+    <!-- Ingestion progress bar -->
+    <div v-if="ingestionStatus === 'ingesting'" class="xbm-ingestion-bar">
+      <span class="xbm-spinner"></span>
+      <span>Ingesting {{ ingestionProcessed }}/{{ ingestionTotal }}</span>
+    </div>
+    <div v-else-if="ingestionStatus === 'done'" class="xbm-ingestion-bar xbm-ingestion-done" @click="ingestionStatus = 'idle'">
+      Ingestion complete ({{ ingestionProcessed }} bookmarks)
+    </div>
 
     <!-- Search bar -->
     <div class="xbm-filter-bar">
@@ -773,6 +842,21 @@ defineExpose({ reset });
               />
             </div>
             <div class="xbm-detail-actions">
+              <!-- Ingest button -->
+              <template v-if="ingestingTweetId === bm.tweetId">
+                <span class="xbm-ingest-status"><span class="xbm-spinner"></span></span>
+              </template>
+              <template v-else-if="bm.ingestedAt">
+                <span class="xbm-ingested-badge" :title="'Ingested ' + new Date(bm.ingestedAt).toLocaleDateString()">SAVED</span>
+              </template>
+              <template v-else>
+                <button
+                  class="xbm-ingest-btn"
+                  @click.stop="ingestBookmark(bm.tweetId)"
+                  title="Download images, video & metadata to local folder"
+                >Ingest</button>
+              </template>
+
               <button class="xbm-link-btn" @click.stop="openInBackground(bm.tweetUrl)">Open on X</button>
               <button
                 v-if="!bm.archived"
@@ -805,6 +889,13 @@ defineExpose({ reset });
         </div>
       </div>
     </div>
+
+    <!-- Ingestion settings dialog -->
+    <IngestionSettingsDialog
+      v-if="showIngestionSettings"
+      @close="showIngestionSettings = false"
+      @ingest-all="ingestAll"
+    />
   </div>
 </template>
 
@@ -1607,5 +1698,64 @@ defineExpose({ reset });
   display: flex;
   justify-content: center;
   padding: 12px;
+}
+
+/* -- Ingestion progress bar -- */
+.xbm-ingestion-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--accent-amber);
+  background: rgba(217, 119, 6, 0.06);
+  text-align: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.xbm-ingestion-done {
+  color: var(--accent-green);
+  background: rgba(5, 150, 105, 0.06);
+  cursor: pointer;
+}
+
+/* -- Ingest button in detail actions -- */
+.xbm-ingest-btn {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent-amber);
+  padding: 2px 7px;
+  border: 1px solid rgba(217, 119, 6, 0.4);
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.xbm-ingest-btn:hover {
+  background: var(--accent-amber);
+  color: #fff;
+}
+
+.xbm-ingested-badge {
+  font-size: 8px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--accent-green);
+  background: rgba(5, 150, 105, 0.1);
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid rgba(5, 150, 105, 0.25);
+}
+
+.xbm-ingest-status {
+  display: flex;
+  align-items: center;
 }
 </style>

@@ -10,6 +10,7 @@ import { getInitializationService } from '../src/services/InitializationService'
 import { getCaptureService } from '../src/services/CaptureService';
 import { getXBookmarkService } from '../src/services/XBookmarkService';
 import { getVideoDownloadService } from '../src/services/VideoDownloadService';
+import { getContentIngestionService } from '../src/services/ContentIngestionService';
 import { TIMING, ALARM_NAMES } from '../src/constants';
 
 export default defineBackground(() => {
@@ -525,6 +526,43 @@ export default defineBackground(() => {
           case 'X_CLEAR_DOWNLOAD_STATUS': {
             const videoService = getVideoDownloadService();
             await videoService.clearDownloadStatus();
+            sendResponse({ success: true });
+            break;
+          }
+
+          // ============================================
+          // CONTENT INGESTION HANDLERS
+          // ============================================
+
+          case 'X_GET_INGESTION_SETTINGS': {
+            const ingestionService = getContentIngestionService();
+            const folder = await ingestionService.getIngestionFolder();
+            const os = ingestionService.detectOS();
+            const defaultFolder = ingestionService.getDefaultFolder();
+            const uningestedCount = await ingestionService.getUningestedCount();
+            sendResponse({ success: true, data: { folder, os, defaultFolder, uningestedCount } });
+            break;
+          }
+
+          case 'X_SET_INGESTION_FOLDER': {
+            const ingestionService = getContentIngestionService();
+            const result = await ingestionService.setIngestionFolder(message.folder);
+            sendResponse({ success: result.success, data: result, error: result.error });
+            break;
+          }
+
+          case 'X_INGEST_BOOKMARK': {
+            // Fire-and-forget: ingestion is long-running, progress via chrome.storage.local
+            const ingestionService = getContentIngestionService();
+            ingestionService.ingestBookmark(message.tweetId).catch(console.error);
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'X_INGEST_BATCH': {
+            // Fire-and-forget: batch ingestion, progress via chrome.storage.local
+            const ingestionService = getContentIngestionService();
+            ingestionService.ingestBatch(message.tweetIds).catch(console.error);
             sendResponse({ success: true });
             break;
           }
