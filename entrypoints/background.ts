@@ -344,19 +344,23 @@ export default defineBackground(() => {
             // Get all data for export - runs in background context with full DB access
             const db = storageManager.getDB();
             const sessionId = message.sessionId || storageManager.getCurrentSessionId();
+            const entities: string[] | undefined = message.entities;
 
-            const [sessions, windows, tabs, visits, relationships, tags] = await Promise.all([
-              sessionId ? db.sessions.where('id').equals(sessionId).toArray() : db.sessions.toArray(),
-              sessionId ? db.windows.where('sessionId').equals(sessionId).toArray() : db.windows.toArray(),
-              sessionId ? db.tabs.where('sessionId').equals(sessionId).toArray() : db.tabs.toArray(),
-              db.tabVisits.toArray(),
-              db.tabRelationships.toArray(),
-              db.tags.toArray(),
+            const want = (name: string) => !entities || entities.includes(name);
+
+            const [sessions, windows, tabs, visits, relationships, tags, xBookmarks] = await Promise.all([
+              want('sessions') ? (sessionId ? db.sessions.where('id').equals(sessionId).toArray() : db.sessions.toArray()) : Promise.resolve([]),
+              want('windows') ? (sessionId ? db.windows.where('sessionId').equals(sessionId).toArray() : db.windows.toArray()) : Promise.resolve([]),
+              want('tabs') ? (sessionId ? db.tabs.where('sessionId').equals(sessionId).toArray() : db.tabs.toArray()) : Promise.resolve([]),
+              want('visits') ? db.tabVisits.toArray() : Promise.resolve([]),
+              want('relationships') ? db.tabRelationships.toArray() : Promise.resolve([]),
+              want('tags') ? db.tags.toArray() : Promise.resolve([]),
+              want('xBookmarks') ? db.xBookmarks.filter(b => !b.archived).toArray() : Promise.resolve([]),
             ]);
 
             sendResponse({
               success: true,
-              data: { sessions, windows, tabs, visits, relationships, tags }
+              data: { sessions, windows, tabs, visits, relationships, tags, xBookmarks }
             });
             break;
           }

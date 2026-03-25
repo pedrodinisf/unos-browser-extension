@@ -6,9 +6,10 @@ import type {
   Session,
   TabRelationship,
   Tag,
+  XBookmark,
   ExportData,
   ExportManifest,
-  ExportFilters,
+  ExportEntitySelection,
 } from '../db/types';
 
 /**
@@ -16,11 +17,14 @@ import type {
  */
 export interface ExportOptions {
   format: 'json' | 'csv' | 'zip';
-  scope: 'current-window' | 'all-windows' | 'session' | 'custom';
-  filters?: Partial<ExportFilters>;
-  includeVisitHistory?: boolean;
-  includeRelationships?: boolean;
+  entities: ExportEntitySelection;
+  /** For CSV: which single entity to export */
+  csvEntity?: keyof Omit<ExportEntitySelection, 'manifest'>;
 }
+
+/** Entity key names (excluding manifest which is metadata, not a table) */
+export const ENTITY_KEYS = ['sessions', 'windows', 'tabs', 'visits', 'relationships', 'tags', 'xBookmarks'] as const;
+export type EntityKey = typeof ENTITY_KEYS[number];
 
 /**
  * All data fetched from background script
@@ -32,6 +36,7 @@ interface AllData {
   visits: TabVisit[];
   relationships: TabRelationship[];
   tags: Tag[];
+  xBookmarks: XBookmark[];
 }
 
 /**
@@ -54,6 +59,13 @@ async function sendMessage<T>(message: Record<string, unknown>): Promise<T> {
 }
 
 /**
+ * Return the list of entity keys that are selected
+ */
+function selectedEntities(entities: ExportEntitySelection): EntityKey[] {
+  return ENTITY_KEYS.filter(k => entities[k]);
+}
+
+/**
  * ExportService - Handles data export (runs in popup context)
  */
 export class ExportService {
@@ -61,76 +73,200 @@ export class ExportService {
    * Export data based on options
    */
   async export(options: ExportOptions): Promise<string | Blob> {
-    // Get all data from background script
-    const data = await sendMessage<AllData>({ type: 'GET_ALL_DATA' });
+    const selected = selectedEntities(options.entities);
+
+    // Fetch only the tables we need
+    const data = await sendMessage<AllData>({
+      type: 'GET_ALL_DATA',
+      entities: selected,
+    });
 
     if (options.format === 'zip') {
-      return this.toZip(data);
+      return this.toZip(data, options.entities);
     }
 
     if (options.format === 'csv') {
-      return this.tabsToCSV(data.tabs, data.windows);
+      const entity = options.csvEntity || selected[0] || 'tabs';
+      return this.entityToCSV(data, entity);
     }
 
-    return this.toJSON(data, options);
+    return this.toJSON(data, options.entities);
   }
 
   /**
-   * Convert to JSON string
+   * Convert to JSON string — only includes selected entities
    */
-  private toJSON(data: AllData, options: ExportOptions): string {
-    const manifest: ExportManifest = {
-      version: '1.0.0',
-      exportedAt: Date.now(),
-      exportType: options.scope === 'session' ? 'session' : 'full',
-      filters: {
-        includeIncognito: options.filters?.includeIncognito ?? true,
-        includeVisitHistory: options.includeVisitHistory ?? true,
-      },
-      stats: {
-        sessionCount: data.sessions.length,
-        windowCount: data.windows.length,
-        tabCount: data.tabs.length,
-        visitCount: data.visits.length,
-      },
-    };
+  private toJSON(data: AllData, entities: ExportEntitySelection): string {
+    const selected = selectedEntities(entities);
 
-    const exportData: ExportData = {
-      manifest,
-      sessions: data.sessions,
-      windows: data.windows,
-      tabs: data.tabs,
-      visits: options.includeVisitHistory ? data.visits : undefined,
-      relationships: options.includeRelationships ? data.relationships : undefined,
-      tags: data.tags.length > 0 ? data.tags : undefined,
-    };
+    const exportData: ExportData = {};
+
+    if (entities.manifest) {
+      exportData.manifest = this.buildManifest(data, entities);
+    }
+    if (entities.sessions) exportData.sessions = data.sessions;
+    if (entities.windows) exportData.windows = data.windows;
+    if (entities.tabs) exportData.tabs = data.tabs;
+    if (entities.visits) exportData.visits = data.visits;
+    if (entities.relationships) exportData.relationships = data.relationships;
+    if (entities.tags) exportData.tags = data.tags;
+    if (entities.xBookmarks) exportData.xBookmarks = data.xBookmarks;
 
     return JSON.stringify(exportData, null, 2);
   }
 
   /**
-   * Convert tabs to CSV string
+   * Build export manifest
+   */
+  private buildManifest(data: AllData, entities: ExportEntitySelection): ExportManifest {
+    const selected = selectedEntities(entities);
+    const stats: ExportManifest['stats'] = {};
+
+    if (entities.sessions) stats.sessionCount = data.sessions.length;
+    if (entities.windows) stats.windowCount = data.windows.length;
+    if (entities.tabs) stats.tabCount = data.tabs.length;
+    if (entities.visits) stats.visitCount = data.visits.length;
+    if (entities.relationships) stats.relationshipCount = data.relationships.length;
+    if (entities.tags) stats.tagCount = data.tags.length;
+    if (entities.xBookmarks) stats.xBookmarkCount = data.xBookmarks.length;
+
+    return {
+      version: '1.0.0',
+      exportedAt: Date.now(),
+      exportType: 'full',
+      filters: { includeIncognito: true, includeVisitHistory: entities.visits },
+      entities: selected,
+      stats,
+    };
+  }
+
+  /**
+   * Route a single entity to its CSV converter
+   */
+  private entityToCSV(data: AllData, entity: EntityKey): string {
+    switch (entity) {
+      case 'sessions': return this.sessionsToCSV(data.sessions);
+      case 'windows': return this.windowsToCSV(data.windows);
+      case 'tabs': return this.tabsToCSV(data.tabs, data.windows);
+      case 'visits': return this.visitsToCSV(data.visits);
+      case 'relationships': return this.relationshipsToCSV(data.relationships);
+      case 'tags': return this.tagsToCSV(data.tags);
+      case 'xBookmarks': return this.xBookmarksToCSV(data.xBookmarks);
+    }
+  }
+
+  /**
+   * Create ZIP with CSV files for each selected entity
+   */
+  private async toZip(data: AllData, entities: ExportEntitySelection): Promise<Blob> {
+    const zip = new JSZip();
+    const timestamp = new Date().toISOString().split('T')[0];
+
+    if (entities.sessions) {
+      zip.file(`sessions_${timestamp}.csv`, this.addBOM(this.sessionsToCSV(data.sessions)));
+    }
+    if (entities.windows) {
+      zip.file(`windows_${timestamp}.csv`, this.addBOM(this.windowsToCSV(data.windows)));
+    }
+    if (entities.tabs) {
+      zip.file(`tabs_${timestamp}.csv`, this.addBOM(this.tabsToCSV(data.tabs, data.windows)));
+    }
+    if (entities.visits) {
+      zip.file(`visits_${timestamp}.csv`, this.addBOM(this.visitsToCSV(data.visits)));
+    }
+    if (entities.relationships) {
+      zip.file(`relationships_${timestamp}.csv`, this.addBOM(this.relationshipsToCSV(data.relationships)));
+    }
+    if (entities.tags) {
+      zip.file(`tags_${timestamp}.csv`, this.addBOM(this.tagsToCSV(data.tags)));
+    }
+    if (entities.xBookmarks) {
+      zip.file(`xBookmarks_${timestamp}.csv`, this.addBOM(this.xBookmarksToCSV(data.xBookmarks)));
+    }
+    if (entities.manifest) {
+      zip.file('manifest.json', JSON.stringify(this.buildManifest(data, entities), null, 2));
+    }
+
+    try {
+      return await zip.generateAsync({ type: 'blob' });
+    } catch (err) {
+      console.error('[ExportService] Failed to generate ZIP:', err);
+      throw new Error('Failed to generate ZIP file');
+    }
+  }
+
+  /**
+   * Convert sessions to CSV
+   */
+  private sessionsToCSV(sessions: Session[]): string {
+    const headers = [
+      'id', 'name', 'description', 'startedAt', 'endedAt', 'isActive', 'isSaved',
+      'windowCount', 'tabCount', 'totalActiveTimeMinutes', 'expiresAt', 'tags', 'createdAt', 'updatedAt',
+    ];
+
+    const rows = sessions.map(s => [
+      s.id,
+      this.escapeCSV(s.name),
+      this.escapeCSV(s.description),
+      new Date(s.startedAt).toISOString(),
+      s.endedAt ? new Date(s.endedAt).toISOString() : '',
+      s.isActive,
+      s.isSaved,
+      s.windowCount,
+      s.tabCount,
+      Math.round(s.totalActiveTime / 60000),
+      s.expiresAt ? new Date(s.expiresAt).toISOString() : '',
+      this.escapeCSV(s.tags.join('; ')),
+      new Date(s.createdAt).toISOString(),
+      new Date(s.updatedAt).toISOString(),
+    ].join(','));
+
+    return [headers.join(','), ...rows].join('\n');
+  }
+
+  /**
+   * Convert windows to CSV
+   */
+  private windowsToCSV(windows: TrackedWindow[]): string {
+    const headers = [
+      'persistentId', 'chromeWindowId', 'type', 'state', 'incognito',
+      'left', 'top', 'width', 'height', 'createdAt', 'lastFocusedAt',
+      'totalFocusTimeMinutes', 'sessionId', 'isSaved', 'tabCount',
+      'activeTabPersistentId', 'closedAt', 'updatedAt',
+    ];
+
+    const rows = windows.map(w => [
+      w.persistentId,
+      w.chromeWindowId,
+      w.type,
+      w.state,
+      w.incognito,
+      w.left,
+      w.top,
+      w.width,
+      w.height,
+      new Date(w.createdAt).toISOString(),
+      new Date(w.lastFocusedAt).toISOString(),
+      Math.round(w.totalFocusTime / 60000),
+      w.sessionId,
+      w.isSaved,
+      w.tabCount,
+      w.activeTabPersistentId || '',
+      w.closedAt ? new Date(w.closedAt).toISOString() : '',
+      new Date(w.updatedAt).toISOString(),
+    ].join(','));
+
+    return [headers.join(','), ...rows].join('\n');
+  }
+
+  /**
+   * Convert tabs to CSV
    */
   private tabsToCSV(tabs: TrackedTab[], windows: TrackedWindow[]): string {
     const headers = [
-      'persistentId',
-      'chromeTabId',
-      'url',
-      'title',
-      'createdAt',
-      'lastActivatedAt',
-      'totalActiveTimeMinutes',
-      'windowPersistentId',
-      'chromeWindowId',
-      'sessionId',
-      'index',
-      'pinned',
-      'groupId',
-      'tags',
-      'notes',
-      'isIncognito',
-      'isSaved',
-      'closedAt',
+      'persistentId', 'chromeTabId', 'url', 'title', 'createdAt', 'lastActivatedAt',
+      'totalActiveTimeMinutes', 'windowPersistentId', 'chromeWindowId', 'sessionId',
+      'index', 'pinned', 'groupId', 'tags', 'notes', 'isIncognito', 'isSaved', 'closedAt',
     ];
 
     const windowMap = new Map(windows.map(w => [w.persistentId, w]));
@@ -163,158 +299,12 @@ export class ExportService {
   }
 
   /**
-   * Create ZIP with all tables as CSV files
-   */
-  private async toZip(data: AllData): Promise<Blob> {
-    const zip = new JSZip();
-    const timestamp = new Date().toISOString().split('T')[0];
-
-    // Sessions CSV (with BOM for Excel compatibility)
-    zip.file(`sessions_${timestamp}.csv`, this.addBOM(this.sessionsToCSV(data.sessions)));
-
-    // Windows CSV
-    zip.file(`windows_${timestamp}.csv`, this.addBOM(this.windowsToCSV(data.windows)));
-
-    // Tabs CSV
-    zip.file(`tabs_${timestamp}.csv`, this.addBOM(this.tabsToCSV(data.tabs, data.windows)));
-
-    // Visits CSV
-    zip.file(`visits_${timestamp}.csv`, this.addBOM(this.visitsToCSV(data.visits)));
-
-    // Relationships CSV
-    zip.file(`relationships_${timestamp}.csv`, this.addBOM(this.relationshipsToCSV(data.relationships)));
-
-    // Tags CSV
-    zip.file(`tags_${timestamp}.csv`, this.addBOM(this.tagsToCSV(data.tags)));
-
-    // Manifest JSON for reference
-    zip.file('manifest.json', JSON.stringify({
-      exportedAt: new Date().toISOString(),
-      version: '1.0.0',
-      stats: {
-        sessions: data.sessions.length,
-        windows: data.windows.length,
-        tabs: data.tabs.length,
-        visits: data.visits.length,
-        relationships: data.relationships.length,
-        tags: data.tags.length,
-      }
-    }, null, 2));
-
-    try {
-      return await zip.generateAsync({ type: 'blob' });
-    } catch (err) {
-      console.error('[ExportService] Failed to generate ZIP:', err);
-      throw new Error('Failed to generate ZIP file');
-    }
-  }
-
-  /**
-   * Convert sessions to CSV
-   */
-  private sessionsToCSV(sessions: Session[]): string {
-    const headers = [
-      'id',
-      'name',
-      'description',
-      'startedAt',
-      'endedAt',
-      'isActive',
-      'isSaved',
-      'windowCount',
-      'tabCount',
-      'totalActiveTime',
-      'expiresAt',
-      'tags',
-      'createdAt',
-      'updatedAt',
-    ];
-
-    const rows = sessions.map(s => [
-      s.id,
-      this.escapeCSV(s.name),
-      this.escapeCSV(s.description),
-      new Date(s.startedAt).toISOString(),
-      s.endedAt ? new Date(s.endedAt).toISOString() : '',
-      s.isActive,
-      s.isSaved,
-      s.windowCount,
-      s.tabCount,
-      Math.round(s.totalActiveTime / 60000),
-      s.expiresAt ? new Date(s.expiresAt).toISOString() : '',
-      this.escapeCSV(s.tags.join('; ')),
-      new Date(s.createdAt).toISOString(),
-      new Date(s.updatedAt).toISOString(),
-    ].join(','));
-
-    return [headers.join(','), ...rows].join('\n');
-  }
-
-  /**
-   * Convert windows to CSV
-   */
-  private windowsToCSV(windows: TrackedWindow[]): string {
-    const headers = [
-      'persistentId',
-      'chromeWindowId',
-      'type',
-      'state',
-      'incognito',
-      'left',
-      'top',
-      'width',
-      'height',
-      'createdAt',
-      'lastFocusedAt',
-      'totalFocusTimeMinutes',
-      'sessionId',
-      'isSaved',
-      'tabCount',
-      'activeTabPersistentId',
-      'closedAt',
-      'updatedAt',
-    ];
-
-    const rows = windows.map(w => [
-      w.persistentId,
-      w.chromeWindowId,
-      w.type,
-      w.state,
-      w.incognito,
-      w.left,
-      w.top,
-      w.width,
-      w.height,
-      new Date(w.createdAt).toISOString(),
-      new Date(w.lastFocusedAt).toISOString(),
-      Math.round(w.totalFocusTime / 60000),
-      w.sessionId,
-      w.isSaved,
-      w.tabCount,
-      w.activeTabPersistentId || '',
-      w.closedAt ? new Date(w.closedAt).toISOString() : '',
-      new Date(w.updatedAt).toISOString(),
-    ].join(','));
-
-    return [headers.join(','), ...rows].join('\n');
-  }
-
-  /**
    * Convert visits to CSV
    */
   private visitsToCSV(visits: TabVisit[]): string {
     const headers = [
-      'id',
-      'tabPersistentId',
-      'sessionId',
-      'url',
-      'urlHash',
-      'title',
-      'activatedAt',
-      'deactivatedAt',
-      'durationMinutes',
-      'windowPersistentId',
-      'fromTabPersistentId',
+      'id', 'tabPersistentId', 'sessionId', 'url', 'urlHash', 'title',
+      'activatedAt', 'deactivatedAt', 'durationMinutes', 'windowPersistentId', 'fromTabPersistentId',
     ];
 
     const rows = visits.map(v => [
@@ -339,12 +329,8 @@ export class ExportService {
    */
   private relationshipsToCSV(relationships: TabRelationship[]): string {
     const headers = [
-      'id',
-      'sourceTabPersistentId',
-      'targetTabPersistentId',
-      'relationshipType',
-      'createdAt',
-      'strength',
+      'id', 'sourceTabPersistentId', 'targetTabPersistentId',
+      'relationshipType', 'createdAt', 'strength',
     ];
 
     const rows = relationships.map(r => [
@@ -363,13 +349,7 @@ export class ExportService {
    * Convert tags to CSV
    */
   private tagsToCSV(tags: Tag[]): string {
-    const headers = [
-      'id',
-      'name',
-      'color',
-      'createdAt',
-      'usageCount',
-    ];
+    const headers = ['id', 'name', 'color', 'createdAt', 'usageCount'];
 
     const rows = tags.map(t => [
       t.id || '',
@@ -383,11 +363,40 @@ export class ExportService {
   }
 
   /**
+   * Convert X bookmarks to CSV
+   */
+  private xBookmarksToCSV(bookmarks: XBookmark[]): string {
+    const headers = [
+      'tweetId', 'authorHandle', 'authorName', 'text', 'timestamp',
+      'tweetUrl', 'mediaUrls', 'hasVideo', 'isQuoteTweet',
+      'firstSeenAt', 'lastSeenAt', 'categories', 'tags', 'notes',
+    ];
+
+    const rows = bookmarks.map(b => [
+      b.tweetId,
+      this.escapeCSV(b.authorHandle),
+      this.escapeCSV(b.authorName),
+      this.escapeCSV(b.text),
+      b.timestamp,
+      this.escapeCSV(b.tweetUrl),
+      this.escapeCSV(b.mediaUrls.join('; ')),
+      b.hasVideo,
+      b.isQuoteTweet,
+      new Date(b.firstSeenAt).toISOString(),
+      new Date(b.lastSeenAt).toISOString(),
+      this.escapeCSV(b.categories.join('; ')),
+      this.escapeCSV(b.tags.join('; ')),
+      this.escapeCSV(b.notes || ''),
+    ].join(','));
+
+    return [headers.join(','), ...rows].join('\n');
+  }
+
+  /**
    * Escape CSV value
    */
   private escapeCSV(value: string): string {
     if (!value) return '';
-    // Always quote strings that could be misinterpreted
     if (value.includes(',') || value.includes('"') || value.includes('\n') || value.includes('\r') || value.includes(';')) {
       return `"${value.replace(/"/g, '""')}"`;
     }
@@ -417,31 +426,21 @@ export class ExportService {
   }
 
   /**
-   * Export and download as JSON
+   * Export and download with the given options
    */
-  async exportAndDownloadJSON(options: Omit<ExportOptions, 'format'>): Promise<void> {
-    const data = await this.export({ ...options, format: 'json' });
-    const filename = `unos-export-${new Date().toISOString().split('T')[0]}.json`;
-    this.downloadFile(data as string, filename, 'application/json');
-  }
+  async exportAndDownload(options: ExportOptions): Promise<void> {
+    const date = new Date().toISOString().split('T')[0];
+    const data = await this.export(options);
 
-  /**
-   * Export and download as CSV
-   */
-  async exportAndDownloadCSV(options: Omit<ExportOptions, 'format'>): Promise<void> {
-    const data = await this.export({ ...options, format: 'csv' });
-    const filename = `unos-tabs-${new Date().toISOString().split('T')[0]}.csv`;
-    // Add BOM for Excel compatibility
-    this.downloadFile(this.addBOM(data as string), filename, 'text/csv;charset=utf-8');
-  }
-
-  /**
-   * Export and download as ZIP (all tables)
-   */
-  async exportAndDownloadZIP(): Promise<void> {
-    const data = await this.export({ format: 'zip', scope: 'session' });
-    const filename = `unos-export-${new Date().toISOString().split('T')[0]}.zip`;
-    this.downloadFile(data as Blob, filename, 'application/zip');
+    if (options.format === 'zip') {
+      this.downloadFile(data as Blob, `unos-export-${date}.zip`, 'application/zip');
+    } else if (options.format === 'json') {
+      this.downloadFile(data as string, `unos-export-${date}.json`, 'application/json');
+    } else {
+      const entity = options.csvEntity || 'tabs';
+      const csv = this.addBOM(data as string);
+      this.downloadFile(csv, `unos-${entity}-${date}.csv`, 'text/csv;charset=utf-8');
+    }
   }
 }
 

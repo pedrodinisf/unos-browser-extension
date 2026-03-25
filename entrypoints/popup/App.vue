@@ -563,7 +563,6 @@ onUnmounted(() => {
     <!-- Export dialog -->
     <ExportDialog
       v-if="showExportDialog"
-      :windows="windows"
       @close="showExportDialog = false"
     />
 

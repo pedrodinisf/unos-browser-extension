@@ -246,6 +246,20 @@ export interface WorkingState {
 }
 
 /**
+ * Which entities to include in an export
+ */
+export interface ExportEntitySelection {
+  sessions: boolean;
+  windows: boolean;
+  tabs: boolean;
+  visits: boolean;
+  relationships: boolean;
+  tags: boolean;
+  xBookmarks: boolean;
+  manifest: boolean;
+}
+
+/**
  * Export manifest for data export
  */
 export interface ExportManifest {
@@ -257,12 +271,17 @@ export interface ExportManifest {
   exportType: 'full' | 'session' | 'window' | 'filtered';
   /** Filters applied */
   filters: ExportFilters;
+  /** Entities included */
+  entities: string[];
   /** Statistics */
   stats: {
-    sessionCount: number;
-    windowCount: number;
-    tabCount: number;
-    visitCount: number;
+    sessionCount?: number;
+    windowCount?: number;
+    tabCount?: number;
+    visitCount?: number;
+    relationshipCount?: number;
+    tagCount?: number;
+    xBookmarkCount?: number;
   };
 }
 
@@ -282,13 +301,14 @@ export interface ExportFilters {
  * Complete export data structure
  */
 export interface ExportData {
-  manifest: ExportManifest;
-  sessions: Session[];
-  windows: TrackedWindow[];
-  tabs: TrackedTab[];
+  manifest?: ExportManifest;
+  sessions?: Session[];
+  windows?: TrackedWindow[];
+  tabs?: TrackedTab[];
   visits?: TabVisit[];
   relationships?: TabRelationship[];
   tags?: Tag[];
+  xBookmarks?: XBookmark[];
 }
 
 // ============================================

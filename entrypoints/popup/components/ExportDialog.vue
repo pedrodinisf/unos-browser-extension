@@ -1,51 +1,86 @@
 <script setup lang="ts">
-import { ref } from 'vue';
-import type { TrackedWindow } from '../../../src/db/types';
-import { getExportService } from '../../../src/services/ExportService';
-
-const props = defineProps<{
-  windows: TrackedWindow[];
-}>();
+import { ref, computed, watch } from 'vue';
+import type { ExportEntitySelection } from '../../../src/db/types';
+import { getExportService, ENTITY_KEYS, type EntityKey, type ExportOptions } from '../../../src/services/ExportService';
 
 const emit = defineEmits<{
   close: [];
 }>();
 
-// State
 const format = ref<'json' | 'csv' | 'zip'>('zip');
-const includeVisitHistory = ref(true);
-const includeRelationships = ref(true);
-const includeIncognito = ref(false);
 const exporting = ref(false);
 const error = ref<string | null>(null);
 
-// Methods
+// Entity selection state
+const entities = ref<ExportEntitySelection>({
+  sessions: true,
+  windows: true,
+  tabs: true,
+  visits: true,
+  relationships: true,
+  tags: true,
+  xBookmarks: true,
+  manifest: true,
+});
+
+// For CSV mode: which single entity is selected
+const csvEntity = ref<EntityKey>('tabs');
+
+// Entity display labels
+const entityLabels: Record<EntityKey, string> = {
+  sessions: 'Sessions',
+  windows: 'Windows',
+  tabs: 'Tabs',
+  visits: 'Visits',
+  relationships: 'Relationships',
+  tags: 'Tags',
+  xBookmarks: 'X Bookmarks',
+};
+
+const isCSV = computed(() => format.value === 'csv');
+const showManifest = computed(() => format.value !== 'csv');
+
+const selectedCount = computed(() =>
+  ENTITY_KEYS.filter(k => entities.value[k]).length + (entities.value.manifest && showManifest.value ? 1 : 0)
+);
+
+const canExport = computed(() => {
+  if (isCSV.value) return true; // csvEntity always has a value
+  return ENTITY_KEYS.some(k => entities.value[k]);
+});
+
+function selectAll() {
+  for (const k of ENTITY_KEYS) entities.value[k] = true;
+  entities.value.manifest = true;
+}
+
+function deselectAll() {
+  for (const k of ENTITY_KEYS) entities.value[k] = false;
+  entities.value.manifest = false;
+}
+
 async function handleExport() {
   try {
     exporting.value = true;
     error.value = null;
     const exportService = getExportService();
 
-    if (format.value === 'zip') {
-      await exportService.exportAndDownloadZIP();
-    } else if (format.value === 'json') {
-      await exportService.exportAndDownloadJSON({
-        scope: 'session',
-        includeVisitHistory: includeVisitHistory.value,
-        includeRelationships: includeRelationships.value,
-        filters: {
-          includeIncognito: includeIncognito.value,
-        },
-      });
+    let options: ExportOptions;
+
+    if (isCSV.value) {
+      // CSV: build entities with only the single selected entity
+      const csvEntities: ExportEntitySelection = {
+        sessions: false, windows: false, tabs: false,
+        visits: false, relationships: false, tags: false,
+        xBookmarks: false, manifest: false,
+      };
+      csvEntities[csvEntity.value] = true;
+      options = { format: 'csv', entities: csvEntities, csvEntity: csvEntity.value };
     } else {
-      await exportService.exportAndDownloadCSV({
-        scope: 'session',
-        filters: {
-          includeIncognito: includeIncognito.value,
-        },
-      });
+      options = { format: format.value, entities: entities.value };
     }
 
+    await exportService.exportAndDownload(options);
     emit('close');
   } catch (err) {
     console.error('Export failed:', err);
@@ -69,65 +104,73 @@ async function handleExport() {
         <div class="field">
           <label class="field-label">Format</label>
           <div class="radio-group">
-            <label class="radio-option recommended">
+            <label class="radio-option" :class="{ recommended: format === 'zip' }">
               <input type="radio" v-model="format" value="zip" />
               <div class="radio-content">
-                <span class="radio-title">ZIP (Recommended)</span>
-                <span class="radio-desc">All tables as separate CSV files</span>
+                <span class="radio-title">ZIP</span>
+                <span class="radio-desc">Each entity as a separate CSV file</span>
               </div>
             </label>
             <label class="radio-option">
               <input type="radio" v-model="format" value="json" />
               <div class="radio-content">
                 <span class="radio-title">JSON</span>
-                <span class="radio-desc">Complete data in single file</span>
+                <span class="radio-desc">All selected entities in a single file</span>
               </div>
             </label>
             <label class="radio-option">
               <input type="radio" v-model="format" value="csv" />
               <div class="radio-content">
                 <span class="radio-title">CSV</span>
-                <span class="radio-desc">Tabs only</span>
+                <span class="radio-desc">Single entity as one CSV file</span>
               </div>
             </label>
           </div>
         </div>
 
-        <!-- ZIP info -->
-        <div v-if="format === 'zip'" class="info-box">
-          <div class="info-title">ZIP contains:</div>
-          <ul class="info-list">
-            <li>sessions.csv - Session records</li>
-            <li>windows.csv - Window records</li>
-            <li>tabs.csv - Tab records</li>
-            <li>visits.csv - Visit history</li>
-            <li>relationships.csv - Tab relationships</li>
-            <li>tags.csv - Tag definitions</li>
-            <li>manifest.json - Export metadata</li>
-          </ul>
-        </div>
+        <!-- Entity selection: checkboxes for ZIP/JSON, radio for CSV -->
+        <div class="field">
+          <div class="field-label-row">
+            <label class="field-label">{{ isCSV ? 'Entity' : 'Entities' }}</label>
+            <div v-if="!isCSV" class="select-links">
+              <button class="link-btn" @click="selectAll">All</button>
+              <span class="link-sep">/</span>
+              <button class="link-btn" @click="deselectAll">None</button>
+            </div>
+          </div>
 
-        <!-- JSON Options -->
-        <div class="field" v-if="format === 'json'">
-          <label class="field-label">Include</label>
-          <div class="checkbox-group">
-            <label class="checkbox-option">
-              <input type="checkbox" v-model="includeVisitHistory" />
-              <span>Visit history</span>
+          <!-- CSV: radio group (single entity) -->
+          <div v-if="isCSV" class="entity-list">
+            <label
+              v-for="key in ENTITY_KEYS"
+              :key="key"
+              class="entity-option"
+            >
+              <input type="radio" v-model="csvEntity" :value="key" />
+              <span>{{ entityLabels[key] }}</span>
             </label>
-            <label class="checkbox-option">
-              <input type="checkbox" v-model="includeRelationships" />
-              <span>Tab relationships</span>
+          </div>
+
+          <!-- ZIP/JSON: checkbox group (multi entity) -->
+          <div v-else class="entity-list">
+            <label
+              v-for="key in ENTITY_KEYS"
+              :key="key"
+              class="entity-option"
+            >
+              <input type="checkbox" v-model="entities[key]" />
+              <span>{{ entityLabels[key] }}</span>
+            </label>
+            <label v-if="showManifest" class="entity-option entity-manifest">
+              <input type="checkbox" v-model="entities.manifest" />
+              <span>Manifest</span>
             </label>
           </div>
         </div>
 
-        <!-- Incognito (for JSON/CSV only) -->
-        <div class="field" v-if="format !== 'zip'">
-          <label class="checkbox-option">
-            <input type="checkbox" v-model="includeIncognito" />
-            <span>Include incognito windows</span>
-          </label>
+        <!-- CSV note -->
+        <div v-if="isCSV" class="info-box info-muted">
+          CSV exports one entity at a time. Use ZIP for multiple.
         </div>
 
         <!-- Error -->
@@ -141,7 +184,7 @@ async function handleExport() {
         <button
           class="btn btn-export"
           @click="handleExport"
-          :disabled="exporting"
+          :disabled="exporting || !canExport"
         >
           {{ exporting ? 'Exporting...' : 'Export' }}
         </button>
@@ -227,7 +270,40 @@ async function handleExport() {
   letter-spacing: 0.5px;
 }
 
-.radio-group, .checkbox-group {
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.select-links {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent-green);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+.link-sep {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.radio-group {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -279,43 +355,44 @@ async function handleExport() {
   color: var(--text-muted);
 }
 
-.checkbox-option {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--text-primary);
+.entity-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
 }
 
-.checkbox-option input {
-  accent-color: var(--accent-green);
-  width: 14px;
-  height: 14px;
+.entity-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   cursor: pointer;
+  font-size: 11.5px;
+  color: var(--text-primary);
+  padding: 3px 0;
+}
+
+.entity-option input {
+  accent-color: var(--accent-green);
+  width: 13px;
+  height: 13px;
+  cursor: pointer;
+}
+
+.entity-manifest {
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .info-box {
-  background: rgba(5, 150, 105, 0.06);
-  border: 1px solid rgba(5, 150, 105, 0.2);
   border-radius: 6px;
-  padding: 10px;
+  padding: 8px 10px;
+  font-size: 10px;
 }
 
-.info-title {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--accent-green);
-  margin-bottom: 6px;
-  text-transform: uppercase;
-}
-
-.info-list {
-  margin: 0;
-  padding-left: 16px;
-  font-size: 10px;
-  color: var(--text-secondary);
-  line-height: 1.6;
+.info-muted {
+  background: var(--bg-alt);
+  border: 1px solid var(--border-light);
+  color: var(--text-muted);
 }
 
 .error-box {

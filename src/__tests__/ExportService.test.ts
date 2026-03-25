@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ExportService, getExportService } from '../services/ExportService';
 import { mockSendMessage } from './setup';
-import type { TrackedTab, TrackedWindow, Session, TabVisit, TabRelationship, Tag } from '../db/types';
+import type { TrackedTab, TrackedWindow, Session, TabVisit, TabRelationship, Tag, XBookmark, ExportEntitySelection } from '../db/types';
 
 // Mock data factories
 function createMockTab(overrides: Partial<TrackedTab> = {}): TrackedTab {
@@ -120,6 +120,32 @@ function createMockTag(overrides: Partial<Tag> = {}): Tag {
     ...overrides,
   };
 }
+
+function createMockXBookmark(overrides: Partial<XBookmark> = {}): XBookmark {
+  return {
+    tweetId: '1234567890',
+    authorHandle: 'testuser',
+    authorName: 'Test User',
+    text: 'This is a test tweet',
+    timestamp: '2026-03-20T12:00:00.000Z',
+    tweetUrl: 'https://x.com/testuser/status/1234567890',
+    mediaUrls: [],
+    hasVideo: false,
+    isQuoteTweet: false,
+    firstSeenAt: Date.now(),
+    lastSeenAt: Date.now(),
+    categories: [],
+    tags: [],
+    notes: '',
+    archived: false,
+    ...overrides,
+  };
+}
+
+const allEntities: ExportEntitySelection = {
+  sessions: true, windows: true, tabs: true, visits: true,
+  relationships: true, tags: true, xBookmarks: true, manifest: true,
+};
 
 describe('ExportService', () => {
   let exportService: ExportService;
@@ -316,6 +342,7 @@ describe('ExportService', () => {
               visits: [createMockVisit()],
               relationships: [createMockRelationship()],
               tags: [createMockTag()],
+              xBookmarks: [createMockXBookmark()],
             },
           });
         }
@@ -323,23 +350,24 @@ describe('ExportService', () => {
     });
 
     it('should export as JSON', async () => {
-      const result = await exportService.export({ format: 'json', scope: 'session' });
+      const result = await exportService.export({ format: 'json', entities: allEntities });
       expect(typeof result).toBe('string');
 
       const parsed = JSON.parse(result as string);
       expect(parsed.manifest).toBeDefined();
       expect(parsed.sessions).toBeDefined();
       expect(parsed.tabs).toBeDefined();
+      expect(parsed.xBookmarks).toBeDefined();
     });
 
     it('should export as CSV', async () => {
-      const result = await exportService.export({ format: 'csv', scope: 'session' });
+      const result = await exportService.export({ format: 'csv', entities: allEntities, csvEntity: 'tabs' });
       expect(typeof result).toBe('string');
       expect(result).toContain('persistentId');
     });
 
     it('should export as ZIP', async () => {
-      const result = await exportService.export({ format: 'zip', scope: 'session' });
+      const result = await exportService.export({ format: 'zip', entities: allEntities });
       expect(result).toBeInstanceOf(Blob);
     });
   });
