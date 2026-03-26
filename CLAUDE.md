@@ -164,6 +164,7 @@ Chrome assigns ephemeral numeric IDs (tab.id, window.id) that change on restart.
 - Syncs X/Twitter bookmarks from `x.com/i/bookmarks` page
 - Orchestrates incremental sync loop: extract → check known → scroll → repeat
 - Stops after 5 consecutive known bookmarks (incremental) or 3 unchanged scroll heights (bottom)
+- **Content script injection**: Before syncing, pings the content script via `GET_PAGE_INFO`; if it's missing (tab was already open or extension reloaded), injects `content-scripts/x-bookmarks-sync.js` programmatically via `chrome.scripting.executeScript()` — this is critical because MV3 declarative content scripts only auto-inject on new navigations
 - Merges into Dexie: preserves `firstSeenAt`, user metadata (tags, notes, categories)
 - CRUD: `getBookmarks()`, `archiveBookmark()`, `updateBookmarkMeta()`, `getSyncState()`
 - Export: `exportAsJSON()`, `exportAsMarkdown()` (grouped by month)
@@ -178,6 +179,7 @@ Chrome assigns ephemeral numeric IDs (tab.id, window.id) that change on restart.
   - `GET_PAGE_INFO` — return scroll position and viewport info
   - `GET_VIDEO_URL` — extract `<video src>` for a specific tweet
 - Does NOT auto-run — purely message-driven
+- **Injection note**: Declarative registration (via `matches` in manifest) only fires on page navigation. If the tab is already open, the background must inject this script programmatically (see `ensureContentScriptInjected` in XBookmarkService)
 
 **VideoDownloadService** (`src/services/VideoDownloadService.ts`)
 - Downloads X/Twitter videos via Chrome Native Messaging + yt-dlp
@@ -392,6 +394,14 @@ storageManager.workingState.currentSessionId = newId;
 // Not saved to chrome.storage.session!
 ```
 ✅ Always call `persistWorkingState()` after changes
+
+**❌ Assuming content script is already injected**
+```typescript
+// DON'T: Send message to content script without checking
+await sendToContentScript(tabId, 'EXTRACT_TWEETS');
+// Fails with "Receiving end does not exist" if tab was already open!
+```
+✅ Call `ensureContentScriptInjected(tabId)` before the sync loop — it pings the script and injects it programmatically via `chrome.scripting.executeScript()` if missing
 
 ## File Organization
 

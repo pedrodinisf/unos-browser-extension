@@ -37,6 +37,42 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Ensure the x-bookmarks-sync content script is injected into the tab.
+ * If the tab was already open before the extension loaded (or after a reload),
+ * the declarative content script won't be present — inject it programmatically.
+ */
+async function ensureContentScriptInjected(tabId: number): Promise<void> {
+  // Ping the content script to see if it's already there
+  try {
+    await new Promise<void>((resolve, reject) => {
+      chrome.tabs.sendMessage(
+        tabId,
+        { target: 'x-bookmarks-sync', action: 'GET_PAGE_INFO' },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else {
+            resolve();
+          }
+        },
+      );
+    });
+    return; // Content script responded — already injected
+  } catch {
+    // Not injected yet — fall through to inject
+  }
+
+  console.log('[UNOS] X Bookmarks: Content script not found, injecting programmatically');
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ['content-scripts/x-bookmarks-sync.js'],
+  });
+
+  // Give the script a moment to set up its message listener
+  await sleep(500);
+}
+
+/**
  * XBookmarkService — orchestrates X/Twitter bookmark syncing
  *
  * Runs in the background service worker. Communicates with the content script
@@ -72,6 +108,7 @@ export class XBookmarkService {
       // Find or create the bookmarks tab
       const tabId = await this.findOrCreateBookmarksTab();
       await this.waitForTabLoad(tabId);
+      await ensureContentScriptInjected(tabId);
       await sleep(X_JS_RENDER_DELAY_MS);
 
       // Load known tweet IDs from Dexie
