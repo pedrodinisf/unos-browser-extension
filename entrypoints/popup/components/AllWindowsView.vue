@@ -140,6 +140,8 @@ onUnmounted(() => document.removeEventListener('keydown', onKeyDown));
 // Bulk actions
 async function bulkCloseTabs() {
   if (isLoading.value || !hasSelection.value) return;
+  const count = selectedCount.value;
+  if (count > 1 && !confirm(`Close ${count} tabs? This cannot be undone.`)) return;
   isLoading.value = true;
   try {
     const chromeTabIds = selectedTabObjects.value.map(t => t.chromeTabId);
@@ -564,12 +566,153 @@ function getDomain(url: string) {
 // Total stats
 const totalTabs = computed(() => props.tabs.filter(t => !t.closedAt).length);
 
+// ── Duplicate detection ──
+
+const showDuplicates = ref(false);
+
+// Per-window duplicate groups: windowPersistentId → url → tabs[]
+const duplicateGroups = computed(() => {
+  const result = new Map<string, Map<string, TrackedTab[]>>();
+
+  for (const win of openWindows.value) {
+    const urlMap = new Map<string, TrackedTab[]>();
+    const windowTabs = props.tabs.filter(t =>
+      t.windowPersistentId === win.persistentId && !t.closedAt
+    );
+
+    for (const tab of windowTabs) {
+      if (!tab.url ||
+          tab.url.startsWith('chrome://') ||
+          tab.url.startsWith('chrome-extension://') ||
+          tab.url.startsWith('about:')) continue;
+
+      const existing = urlMap.get(tab.url) || [];
+      existing.push(tab);
+      urlMap.set(tab.url, existing);
+    }
+
+    const dupsOnly = new Map<string, TrackedTab[]>();
+    for (const [url, tabs] of urlMap) {
+      if (tabs.length >= 2) dupsOnly.set(url, tabs);
+    }
+
+    if (dupsOnly.size > 0) {
+      result.set(win.persistentId, dupsOnly);
+    }
+  }
+
+  return result;
+});
+
+// Total closable duplicates (extras beyond the keeper in each group)
+const totalDuplicateCount = computed(() => {
+  let count = 0;
+  for (const [, windowDups] of duplicateGroups.value) {
+    for (const [, tabs] of windowDups) {
+      count += tabs.length - 1;
+    }
+  }
+  return count;
+});
+
+// Duplicate count for a specific window
+function getWindowDuplicateCount(windowPersistentId: string): number {
+  const windowDups = duplicateGroups.value.get(windowPersistentId);
+  if (!windowDups) return 0;
+  let count = 0;
+  for (const [, tabs] of windowDups) {
+    count += tabs.length - 1;
+  }
+  return count;
+}
+
+// Total duplicate groups across all windows
+const totalDuplicateGroups = computed(() => {
+  let count = 0;
+  for (const [, windowDups] of duplicateGroups.value) {
+    count += windowDups.size;
+  }
+  return count;
+});
+
+// Select which tab to keep in a duplicate group (highest priority wins)
+function selectKeeperTab(tabs: TrackedTab[]): TrackedTab {
+  return [...tabs].sort((a, b) => {
+    // Pinned tabs always win
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    // Saved tabs next
+    if (a.isSaved !== b.isSaved) return a.isSaved ? -1 : 1;
+    // Has metadata (tags or notes)
+    const aMeta = (a.tags?.length || 0) + (a.notes ? 1 : 0);
+    const bMeta = (b.tags?.length || 0) + (b.notes ? 1 : 0);
+    if (aMeta !== bMeta) return bMeta - aMeta;
+    // Most active time
+    if ((a.totalActiveTime || 0) !== (b.totalActiveTime || 0)) {
+      return (b.totalActiveTime || 0) - (a.totalActiveTime || 0);
+    }
+    // Lowest index (first in window)
+    return (a.index || 0) - (b.index || 0);
+  })[0];
+}
+
+// Check if a tab is the keeper in its duplicate group
+function isKeeperTab(tab: TrackedTab): boolean {
+  const windowDups = duplicateGroups.value.get(tab.windowPersistentId);
+  if (!windowDups) return false;
+  const group = windowDups.get(tab.url);
+  if (!group) return false;
+  return selectKeeperTab(group).persistentId === tab.persistentId;
+}
+
+// Check if a tab is a duplicate (in any group)
+function isDuplicateTab(tab: TrackedTab): boolean {
+  const windowDups = duplicateGroups.value.get(tab.windowPersistentId);
+  if (!windowDups) return false;
+  return windowDups.has(tab.url);
+}
+
+// Close all duplicate tabs (keep one per group)
+async function closeDuplicates() {
+  if (isLoading.value || totalDuplicateCount.value === 0) return;
+
+  const windowCount = duplicateGroups.value.size;
+  const msg = `Close ${totalDuplicateCount.value} duplicate tab${totalDuplicateCount.value > 1 ? 's' : ''} across ${windowCount} window${windowCount > 1 ? 's' : ''}?\n\nTabs with unsaved form data may lose changes.`;
+  if (!confirm(msg)) return;
+
+  isLoading.value = true;
+  try {
+    const chromeTabIds: number[] = [];
+    for (const [, windowDups] of duplicateGroups.value) {
+      for (const [, tabs] of windowDups) {
+        const keeper = selectKeeperTab(tabs);
+        for (const tab of tabs) {
+          if (tab.persistentId !== keeper.persistentId) {
+            chromeTabIds.push(tab.chromeTabId);
+          }
+        }
+      }
+    }
+
+    if (chromeTabIds.length > 0) {
+      await sendMessage({ type: 'BULK_CLOSE_TABS', chromeTabIds });
+    }
+
+    showDuplicates.value = false;
+    emit('dataChanged');
+  } catch (err) {
+    emit('error', err instanceof Error ? err.message : 'Failed to close duplicates');
+  } finally {
+    isLoading.value = false;
+  }
+}
+
 const containerEl = ref<HTMLElement | null>(null);
 
 function reset() {
   windowSearch.value = new Map();
   selectedTabs.value = new Set();
   collapsedWindows.value = new Set();
+  showDuplicates.value = false;
   containerEl.value?.scrollTo(0, 0);
 }
 
@@ -584,6 +727,13 @@ defineExpose({ reset });
         <span class="stats-inline">{{ openWindows.length }} win / {{ totalTabs }} tabs</span>
       </div>
       <div class="toolbar-right">
+        <button
+          class="tool-btn dup-btn"
+          :class="{ active: showDuplicates, 'has-dupes': totalDuplicateCount > 0 }"
+          :disabled="totalDuplicateCount === 0"
+          @click="showDuplicates = !showDuplicates"
+          :title="totalDuplicateCount > 0 ? `${totalDuplicateCount} duplicate tabs found — click to review` : 'No duplicate tabs'"
+        >DUP {{ totalDuplicateCount }}</button>
         <button
           class="tool-btn"
           :class="{ active: showCompact }"
@@ -625,6 +775,10 @@ defineExpose({ reset });
           <span class="window-id">Window {{ openWindows.indexOf(win) + 1 }}</span>
           <span class="window-chrome-id">({{ win.chromeWindowId }})</span>
           <span class="window-count">{{ getWindowTabCount(win.persistentId) }} tabs</span>
+          <span
+            v-if="getWindowDuplicateCount(win.persistentId) > 0"
+            class="window-dup-badge"
+          >{{ getWindowDuplicateCount(win.persistentId) }} dup</span>
           <button class="window-btn" @click.stop="focusWindow(win)" title="Focus window">&#8599;</button>
           <span v-if="win.incognito" class="incognito-badge">incog</span>
           <input
@@ -666,6 +820,8 @@ defineExpose({ reset });
               'drop-above': isDropTarget(tab.persistentId, 'before'),
               'drop-below': isDropTarget(tab.persistentId, 'after'),
               selected: selectedTabs.has(tab.persistentId),
+              'dup-keeper': showDuplicates && isDuplicateTab(tab) && isKeeperTab(tab),
+              'dup-closable': showDuplicates && isDuplicateTab(tab) && !isKeeperTab(tab),
             }"
             draggable="true"
             @dragstart="onDragStart($event, tab)"
@@ -682,6 +838,7 @@ defineExpose({ reset });
               @dblclick.stop
             />
             <span class="tab-idx">{{ tab.index + 1 }}</span>
+            <span v-if="tab.pinned" class="tab-badge pinned" title="Pinned">&#128204;</span>
             <img
               v-if="tab.faviconUrl"
               :src="tab.faviconUrl"
@@ -696,6 +853,8 @@ defineExpose({ reset });
             <span class="tab-time">{{ formatTime(tab.totalActiveTime || 0) }}</span>
             <span v-if="tab.isSaved" class="tab-badge saved">&#9733;</span>
             <span v-if="tab.tags?.length" class="tab-badge tags">{{ tab.tags.length }}</span>
+            <span v-if="showDuplicates && isDuplicateTab(tab) && isKeeperTab(tab)" class="tab-badge dup-keep">KEEP</span>
+            <span v-if="showDuplicates && isDuplicateTab(tab) && !isKeeperTab(tab)" class="tab-badge dup-close">DUP</span>
             <button class="tab-close" @click="closeTab(tab, $event)" title="Close">&times;</button>
           </div>
 
@@ -712,7 +871,7 @@ defineExpose({ reset });
 
     <!-- Floating bulk action bar -->
     <Transition name="slide-up">
-      <div v-if="hasSelection" class="bulk-action-bar">
+      <div v-if="hasSelection && !showDuplicates" class="bulk-action-bar">
         <span class="bulk-count">{{ selectedCount }} selected</span>
         <button class="bulk-btn" @click="clearSelection" title="Clear selection">Clear</button>
         <span class="bulk-separator"></span>
@@ -736,6 +895,15 @@ defineExpose({ reset });
         </select>
         <span class="bulk-separator"></span>
         <button class="bulk-btn danger" @click="bulkCloseTabs" title="Close all selected tabs">Close {{ selectedCount }}</button>
+      </div>
+    </Transition>
+
+    <!-- Floating duplicate action bar -->
+    <Transition name="slide-up">
+      <div v-if="showDuplicates && totalDuplicateCount > 0" class="dup-action-bar">
+        <span class="dup-action-count">{{ totalDuplicateCount }} duplicate{{ totalDuplicateCount > 1 ? 's' : '' }} &middot; {{ totalDuplicateGroups }} group{{ totalDuplicateGroups > 1 ? 's' : '' }}</span>
+        <button class="bulk-btn danger" @click="closeDuplicates" title="Close all duplicate tabs, keeping one per URL">Close All Duplicates</button>
+        <button class="bulk-btn" @click="showDuplicates = false" title="Exit duplicate mode">&times;</button>
       </div>
     </Transition>
   </div>
@@ -1100,6 +1268,12 @@ defineExpose({ reset });
   flex-shrink: 0;
 }
 
+.tab-badge.pinned {
+  color: var(--accent-amber);
+  font-size: 10px;
+  padding: 0;
+}
+
 .tab-badge.saved {
   color: var(--accent-amber);
 }
@@ -1302,5 +1476,92 @@ defineExpose({ reset });
 
 .windows-container::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
+}
+
+/* ── Duplicate detection ── */
+
+.dup-btn {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.dup-btn.has-dupes {
+  background: rgba(217, 119, 6, 0.15);
+  border-color: rgba(217, 119, 6, 0.4);
+  color: var(--accent-amber);
+}
+
+.dup-btn.has-dupes:hover {
+  background: rgba(217, 119, 6, 0.25);
+}
+
+.dup-btn.active {
+  background: var(--accent-amber) !important;
+  color: #fff !important;
+  border-color: var(--accent-amber) !important;
+}
+
+.dup-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.window-dup-badge {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--accent-amber);
+  background: rgba(217, 119, 6, 0.12);
+  padding: 1px 5px;
+  border-radius: 8px;
+}
+
+.tab-row.dup-keeper {
+  border-left: 2px solid var(--accent-green);
+}
+
+.tab-row.dup-closable {
+  border-left: 2px solid var(--accent-amber);
+  opacity: 0.7;
+}
+
+.tab-badge.dup-keep {
+  background: rgba(5, 150, 105, 0.15);
+  color: var(--accent-green);
+  font-size: 8px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
+}
+
+.tab-badge.dup-close {
+  background: rgba(217, 119, 6, 0.15);
+  color: var(--accent-amber);
+  font-size: 8px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
+}
+
+.dup-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg-header, #2A3328);
+  border-top: 2px solid var(--accent-amber);
+  flex-shrink: 0;
+}
+
+.dup-action-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-amber);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  flex: 1;
 }
 </style>

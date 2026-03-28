@@ -1,5 +1,7 @@
 const NATIVE_HOST_NAME = 'com.unos.video_downloader';
 const DEFAULT_OUTPUT_DIR = '~/Downloads';
+const NATIVE_HOST_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const STALE_DOWNLOAD_THRESHOLD_MS = 6 * 60 * 1000; // 6 minutes
 
 interface NativeHostResponse {
   success: boolean;
@@ -13,6 +15,7 @@ interface DownloadState {
   xBookmarks_downloadTweetId: string;
   xBookmarks_downloadError: string;
   xBookmarks_downloadPath: string;
+  xBookmarks_downloadStartedAt: number;
 }
 
 /**
@@ -45,6 +48,7 @@ export class VideoDownloadService {
         xBookmarks_downloadTweetId: tweetId,
         xBookmarks_downloadError: '',
         xBookmarks_downloadPath: '',
+        xBookmarks_downloadStartedAt: Date.now(),
       });
 
       // Get cookies from both x.com and twitter.com
@@ -66,6 +70,7 @@ export class VideoDownloadService {
           xBookmarks_downloadTweetId: tweetId,
           xBookmarks_downloadError: err,
           xBookmarks_downloadPath: '',
+          xBookmarks_downloadStartedAt: 0,
         });
         return { success: false, error: err };
       }
@@ -101,6 +106,7 @@ export class VideoDownloadService {
           xBookmarks_downloadTweetId: tweetId,
           xBookmarks_downloadError: '',
           xBookmarks_downloadPath: response.filePath || '',
+          xBookmarks_downloadStartedAt: 0,
         });
       } else {
         await this.setDownloadState({
@@ -108,6 +114,7 @@ export class VideoDownloadService {
           xBookmarks_downloadTweetId: tweetId,
           xBookmarks_downloadError: response.error || 'Download failed',
           xBookmarks_downloadPath: '',
+          xBookmarks_downloadStartedAt: 0,
         });
       }
 
@@ -120,6 +127,7 @@ export class VideoDownloadService {
         xBookmarks_downloadTweetId: tweetId,
         xBookmarks_downloadError: errorMsg,
         xBookmarks_downloadPath: '',
+        xBookmarks_downloadStartedAt: 0,
       });
       return { success: false, error: errorMsg };
     } finally {
@@ -131,12 +139,31 @@ export class VideoDownloadService {
    * Clear download state (reset to idle)
    */
   async clearDownloadStatus(): Promise<void> {
+    this.downloadInProgress = false;
     await this.setDownloadState({
       xBookmarks_downloadStatus: 'idle',
       xBookmarks_downloadTweetId: '',
       xBookmarks_downloadError: '',
       xBookmarks_downloadPath: '',
+      xBookmarks_downloadStartedAt: 0,
     });
+  }
+
+  /**
+   * Check for and clear stale "downloading" state (e.g. after service worker restart).
+   * Called from popup on mount or background on startup.
+   */
+  async clearStaleDownloadState(): Promise<boolean> {
+    const data = await chrome.storage.local.get(['xBookmarks_downloadStatus', 'xBookmarks_downloadStartedAt']);
+    if (data.xBookmarks_downloadStatus === 'downloading') {
+      const startedAt = data.xBookmarks_downloadStartedAt || 0;
+      if (!startedAt || Date.now() - startedAt > STALE_DOWNLOAD_THRESHOLD_MS) {
+        console.log('[VideoDownload] Clearing stale download state (started:', startedAt ? new Date(startedAt).toISOString() : 'unknown', ')');
+        await this.clearDownloadStatus();
+        return true;
+      }
+    }
+    return false;
   }
 
   // ── Private helpers ──
@@ -147,7 +174,12 @@ export class VideoDownloadService {
 
   private sendToNativeHost(message: Record<string, unknown>): Promise<NativeHostResponse> {
     return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error('Native host timed out after 5 minutes. Check native-host/native-host.log for details.'));
+      }, NATIVE_HOST_TIMEOUT_MS);
+
       chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, message, (response) => {
+        clearTimeout(timer);
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
         } else {

@@ -19,6 +19,7 @@ const statusMsg = ref('');
 const downloadStatus = ref<'idle' | 'downloading' | 'done' | 'error'>('idle');
 const downloadTweetId = ref('');
 const downloadError = ref('');
+const downloadPath = ref('');
 
 // Ingestion state
 const showIngestionSettings = ref(false);
@@ -163,6 +164,9 @@ function onStorageChanged(changes: Record<string, chrome.storage.StorageChange>,
   if (changes.xBookmarks_downloadError) {
     downloadError.value = changes.xBookmarks_downloadError.newValue || '';
   }
+  if (changes.xBookmarks_downloadPath) {
+    downloadPath.value = changes.xBookmarks_downloadPath.newValue || '';
+  }
 
   // Ingestion state
   if (changes.ingestion_status) {
@@ -303,7 +307,18 @@ async function clearDownloadStatus() {
     downloadStatus.value = 'idle';
     downloadTweetId.value = '';
     downloadError.value = '';
+    downloadPath.value = '';
   } catch { /* ignore */ }
+}
+
+// Reveal downloaded file in Finder / File Explorer
+async function revealDownload() {
+  if (!downloadPath.value) return;
+  try {
+    await sendMessage({ type: 'X_REVEAL_DOWNLOAD', path: downloadPath.value });
+  } catch (err) {
+    console.error('Failed to reveal file:', err);
+  }
 }
 
 // Open URL in background tab (popup stays open)
@@ -508,8 +523,13 @@ onMounted(async () => {
   chrome.storage.onChanged.addListener(onStorageChanged);
 
   // Check if sync or download is already in progress
+  // First, clear any stale download state (e.g. from service worker restart)
+  chrome.runtime.sendMessage({ type: 'X_CLEAR_STALE_DOWNLOAD' }, () => {
+    if (chrome.runtime.lastError) { /* ignore */ }
+  });
+
   chrome.storage.local.get(
-    ['xBookmarks_syncStatus', 'xBookmarks_downloadStatus', 'xBookmarks_downloadTweetId', 'xBookmarks_downloadError'],
+    ['xBookmarks_syncStatus', 'xBookmarks_downloadStatus', 'xBookmarks_downloadTweetId', 'xBookmarks_downloadError', 'xBookmarks_downloadPath'],
     (data) => {
       if (data.xBookmarks_syncStatus === 'syncing' || data.xBookmarks_syncStatus === 'starting') {
         syncing.value = true;
@@ -522,6 +542,9 @@ onMounted(async () => {
       }
       if (data.xBookmarks_downloadError) {
         downloadError.value = data.xBookmarks_downloadError;
+      }
+      if (data.xBookmarks_downloadPath) {
+        downloadPath.value = data.xBookmarks_downloadPath;
       }
     },
   );
@@ -801,9 +824,11 @@ defineExpose({ reset });
             </template>
             <!-- Download completed for this tweet -->
             <template v-else-if="downloadTweetId === bm.tweetId && downloadStatus === 'done'">
-              <span class="xbm-video-status done" @click.stop="clearDownloadStatus()">
-                Downloaded &#10003;
-              </span>
+              <span class="xbm-video-status done">Downloaded &#10003;</span>
+              <button v-if="downloadPath" class="xbm-reveal-btn" @click.stop="revealDownload" title="Reveal in Finder">
+                Open in Finder
+              </button>
+              <button class="xbm-dismiss-btn" @click.stop="clearDownloadStatus()" title="Dismiss">&times;</button>
             </template>
             <!-- Download error for this tweet -->
             <template v-else-if="downloadTweetId === bm.tweetId && downloadStatus === 'error'">
@@ -1542,7 +1567,37 @@ defineExpose({ reset });
 
 .xbm-video-status.done {
   color: var(--accent-green);
+}
+
+.xbm-reveal-btn {
+  background: rgba(5, 150, 105, 0.12);
+  border: 1px solid rgba(5, 150, 105, 0.3);
+  color: var(--accent-green);
+  font-size: 9px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
   cursor: pointer;
+  transition: all 0.15s;
+}
+
+.xbm-reveal-btn:hover {
+  background: rgba(5, 150, 105, 0.25);
+}
+
+.xbm-dismiss-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.xbm-dismiss-btn:hover {
+  color: var(--text-primary);
 }
 
 .xbm-video-status.error {

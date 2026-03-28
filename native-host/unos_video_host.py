@@ -443,6 +443,23 @@ def main():
         log.info("Result: %s", result)
         send_response(result)
 
+    elif action == "reveal_file":
+        file_path = msg.get("path", "")
+        p = Path(file_path).expanduser()
+        if not p.exists():
+            send_response({"success": False, "error": f"File not found: {file_path}"})
+        else:
+            import subprocess as _sp
+            import platform
+            system = platform.system()
+            if system == "Darwin":
+                _sp.Popen(["open", "-R", str(p)])
+            elif system == "Windows":
+                _sp.Popen(["explorer", "/select,", str(p)])
+            else:
+                _sp.Popen(["xdg-open", str(p.parent)])
+            send_response({"success": True})
+
     else:
         send_response({"success": False, "error": f"Unknown action: {action}"})
 

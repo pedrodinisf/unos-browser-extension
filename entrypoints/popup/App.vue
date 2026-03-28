@@ -20,7 +20,7 @@ const showMetadataPanel = ref(false);
 const showExportDialog = ref(false);
 const showUrlGrepperDialog = ref(false);
 const showScrollCaptureDialog = ref(false);
-const activeView = ref<'recent' | 'windows' | 'xbookmarks' | 'xmetrics' | 'debug'>('xbookmarks');
+const activeView = ref<'recent' | 'windows' | 'xbookmarks' | 'xmetrics' | 'debug'>('windows');
 const chromeMemoryMB = ref<number | null>(null);
 
 // View refs for reset
@@ -550,6 +550,7 @@ onUnmounted(() => {
         :tabs="tabs"
         class="view-content"
         @dataChanged="loadData"
+        @error="error = $event"
       />
 
       <!-- Debug Panel -->

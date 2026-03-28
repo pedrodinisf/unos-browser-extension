@@ -323,6 +323,7 @@ export default defineBackground(() => {
           case 'CLOSE_TAB': {
             const { chromeTabId } = message;
             await chrome.tabs.remove(chromeTabId);
+            broadcastDataChanged();
             sendResponse({ success: true });
             break;
           }
@@ -527,6 +528,25 @@ export default defineBackground(() => {
             const videoService = getVideoDownloadService();
             await videoService.clearDownloadStatus();
             sendResponse({ success: true });
+            break;
+          }
+
+          case 'X_CLEAR_STALE_DOWNLOAD': {
+            const videoService = getVideoDownloadService();
+            const cleared = await videoService.clearStaleDownloadState();
+            sendResponse({ success: true, data: { cleared } });
+            break;
+          }
+
+          case 'X_REVEAL_DOWNLOAD': {
+            const { path } = message;
+            const nativeResponse = await new Promise<{ success: boolean; error?: string }>((resolve, reject) => {
+              chrome.runtime.sendNativeMessage('com.unos.video_downloader', { action: 'reveal_file', path }, (resp) => {
+                if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+                else resolve(resp);
+              });
+            });
+            sendResponse({ success: nativeResponse.success, error: nativeResponse.error });
             break;
           }
 
