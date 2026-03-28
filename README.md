@@ -49,9 +49,17 @@ A Chrome extension for continuous tab tracking with relationship analysis, metad
 - **Video Download** — Download videos from bookmarked tweets via yt-dlp with separate audio extraction (requires native host setup)
 - **Quick Video Download** — Header toolbar button auto-detects bookmarked tweets with video on the active tab
 - **Media Indicators** — Image count badges and video flags on each bookmark
+- **Analytics Dashboard** — LOG tab with acquisition timeline, top authors, content composition, and tweet age distribution
+
+### Local Content Ingestion
+- **Batch Download** — Download all bookmark content (images, video, audio, metadata) to a local folder
+- **Per-Bookmark Folders** — Each bookmark gets its own folder with `metadata.json`, `content.txt`, and media files
+- **OS-Aware Defaults** — `~/Documents/UNOS/x-inbox` (macOS/Linux), `%USERPROFILE%\Documents\UNOS\x-inbox` (Windows)
+- **Folder Validation** — Validates writable path via native host before ingesting
+- **Progress Tracking** — Batch progress tracked in popup UI
 
 ### Navigation & Tools
-- **Tab bar** — `✕ MARKS` | `◷ RECENT` | `⌗ WINDOWS` | `⚙ DIAG` — monospace, NASA instrument panel style
+- **Tab bar** — `✕ MARKS` | `▦ LOG` | `◿ RECENT` | `⌗ WINDOWS` | `⚙ DIAG` — monospace, NASA instrument panel style
 - **Tool buttons** — Icon-only buttons in header: Export, URL Grepper, Scroll Screenshot
 - **Export** - ZIP, JSON, or CSV export
 - **URL Grepper** - Extract, filter, and download URLs from any page via regex
@@ -190,6 +198,8 @@ unos_browser_extension/
 │       └── components/
 │           ├── AllWindowsView.vue     # Tab management UI
 │           ├── XBookmarksView.vue     # X/Twitter bookmark manager
+│           ├── XMetricsView.vue      # X bookmark analytics dashboard
+│           ├── IngestionSettingsDialog.vue # Local content ingestion config
 │           ├── DebugPanel.vue         # Debug interface
 │           ├── MetadataPanel.vue      # Tag/notes editor
 │           ├── ExportDialog.vue       # Export options
@@ -209,7 +219,7 @@ unos_browser_extension/
 │   │   ├── ExportService.test.ts
 │   │   └── utils.test.ts
 │   ├── db/
-│   │   ├── schema.ts                  # Dexie database schema (v1 + v2)
+│   │   ├── schema.ts                  # Dexie database schema (v1 → v3)
 │   │   └── types.ts                   # TypeScript interfaces
 │   ├── services/
 │   │   ├── StorageManager.ts          # Hybrid storage orchestration
@@ -220,7 +230,8 @@ unos_browser_extension/
 │   │   ├── ExportService.ts           # Export functionality (JSON/CSV/ZIP)
 │   │   ├── CaptureService.ts          # Scroll screenshot orchestration
 │   │   ├── XBookmarkService.ts        # X bookmark sync & management
-│   │   └── VideoDownloadService.ts    # Video download via native messaging
+│   │   ├── VideoDownloadService.ts    # Video download via native messaging
+│   │   └── ContentIngestionService.ts # Local content download pipeline
 │   ├── utils/
 │   │   ├── debounce.ts                # Debounce/throttle utilities
 │   │   ├── hash.ts                    # URL hashing for persistence
@@ -332,6 +343,8 @@ UNOS uses a hybrid storage approach:
   tags: string[];
   notes: string;
   archived: boolean;          // Soft delete
+  ingestedAt: number | null;  // When content was downloaded locally (v3)
+  ingestionPath: string | null; // Local folder path for downloaded content (v3)
 }
 ```
 
@@ -459,6 +472,7 @@ describe('MyFeature', () => {
 - `offscreen` - Stitch screenshot frames off-screen
 - `cookies` - Read X/Twitter auth cookies for video download
 - `nativeMessaging` - Communicate with local yt-dlp host for video download
+- `system.memory` - Read Chrome memory usage for header stat pill
 - `<all_urls>` - Read tab URLs for tracking
 
 ## Future Plans
