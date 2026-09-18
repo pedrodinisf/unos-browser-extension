@@ -72,7 +72,8 @@ function toggleTabSelection(tab: TrackedTab, event: MouseEvent) {
       const start = Math.min(lastIdx, curIdx);
       const end = Math.max(lastIdx, curIdx);
       for (let i = start; i <= end; i++) {
-        newSet.add(ordered[i].persistentId);
+        const orderedTab = ordered[i];
+        if (orderedTab) newSet.add(orderedTab.persistentId);
       }
     }
   } else if (event.ctrlKey || event.metaKey) {
@@ -637,7 +638,7 @@ const totalDuplicateGroups = computed(() => {
 
 // Select which tab to keep in a duplicate group (highest priority wins)
 function selectKeeperTab(tabs: TrackedTab[]): TrackedTab {
-  return [...tabs].sort((a, b) => {
+  const sorted = [...tabs].sort((a, b) => {
     // Pinned tabs always win
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
     // Saved tabs next
@@ -652,7 +653,10 @@ function selectKeeperTab(tabs: TrackedTab[]): TrackedTab {
     }
     // Lowest index (first in window)
     return (a.index || 0) - (b.index || 0);
-  })[0];
+  });
+  const keeper = sorted[0];
+  if (!keeper) throw new Error('selectKeeperTab requires at least one tab');
+  return keeper;
 }
 
 // Check if a tab is the keeper in its duplicate group

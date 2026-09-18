@@ -12,13 +12,13 @@ async function loadDebugInfo() {
     error.value = null;
 
     // Get session info
-    const sessionResponse = await sendMessage({ type: 'GET_CURRENT_SESSION' });
+    const sessionResponse = await sendMessage<{ data: unknown }>({ type: 'GET_CURRENT_SESSION' });
 
     // Get database stats
-    const statsResponse = await sendMessage({ type: 'GET_DEBUG_STATS' });
+    const statsResponse = await sendMessage<{ data: unknown }>({ type: 'GET_DEBUG_STATS' });
 
     // Get recent events
-    const eventsResponse = await sendMessage({ type: 'GET_RECENT_EVENTS' });
+    const eventsResponse = await sendMessage<{ data?: unknown[] }>({ type: 'GET_RECENT_EVENTS' });
 
     debugInfo.value = {
       session: sessionResponse.data,

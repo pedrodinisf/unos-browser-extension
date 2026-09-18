@@ -69,13 +69,31 @@ const tweetUrl = ref('');
 const tweetDownloadStatus = ref<'idle' | 'downloading' | 'done' | 'error'>('idle');
 const tweetDownloadError = ref('');
 
+// chrome.processes is a real Chrome API but is not declared in @types/chrome
+interface ChromeProcessInfo {
+  privateMemory?: number;
+}
+
+interface ChromeProcessesApi {
+  getProcessInfo: (
+    processIds: number[],
+    includeMemory: boolean,
+    callback: (processes: Record<number, ChromeProcessInfo>) => void,
+  ) => void;
+}
+
+function getChromeProcessesApi(): ChromeProcessesApi | undefined {
+  return (chrome as unknown as { processes?: ChromeProcessesApi }).processes;
+}
+
 // Fetch Chrome RAM usage
 async function loadMemory() {
   try {
     // Try per-process memory via chrome.processes (most accurate for Chrome RAM)
-    if (chrome.processes?.getProcessInfo) {
-      const processes: Record<number, chrome.processes.Process> = await new Promise((resolve) => {
-        chrome.processes.getProcessInfo([], true, resolve);
+    const processesApi = getChromeProcessesApi();
+    if (processesApi?.getProcessInfo) {
+      const processes = await new Promise<Record<number, ChromeProcessInfo>>((resolve) => {
+        processesApi.getProcessInfo([], true, resolve);
       });
       let totalBytes = 0;
       for (const proc of Object.values(processes)) {
@@ -175,7 +193,7 @@ async function checkTweetPage() {
   if (!match) return;
 
   isTweetPage.value = true;
-  tweetUrl.value = activeTab.url.split('?')[0];
+  tweetUrl.value = activeTab.url.split('?')[0] ?? activeTab.url;
 
   try {
     const [result] = await chrome.scripting.executeScript({

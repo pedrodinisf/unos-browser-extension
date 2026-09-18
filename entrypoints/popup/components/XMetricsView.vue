@@ -41,8 +41,8 @@ const maxAcquisitionCount = computed(() => {
 });
 
 const maxAuthorCount = computed(() => {
-  if (!metrics.value || metrics.value.topAuthors.length === 0) return 1;
-  return metrics.value.topAuthors[0].count;
+  const topAuthor = metrics.value?.topAuthors[0];
+  return topAuthor ? topAuthor.count : 1;
 });
 
 const maxTweetAgeCount = computed(() => {
