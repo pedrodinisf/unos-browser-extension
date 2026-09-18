@@ -194,15 +194,15 @@ Chrome assigns ephemeral numeric IDs (tab.id, window.id) that change on restart.
 - **PATH**: `launch.sh` exports `/opt/homebrew/bin` so ffmpeg is available for merging (Chrome launches native hosts with minimal PATH)
 
 **MediaEngineService** (`src/services/MediaEngineService.ts`)
-- Sends bookmarked tweet videos to a local `media_engine` installation via the same native host (`engine_download` action)
-- Native host runs: `uv run --no-sync --project <engine> med --json acquire-url <url> --cookies <temp-jar>`
-- `--no-sync` is mandatory — a bare `uv sync` strips the installed `acquire-url` extra; the host venv's `bin/` is prepended to PATH so the engine finds `yt-dlp`
-- Parses the JSON artifact array from stdout and returns `{success, artifactId, filePath, metadata}`
+- Sends bookmarked tweet videos to a locally running `media_engine` server over its REST API
+- Flow per URL: `POST /run` (`acquire.url`, backend `yt-dlp`) → poll `GET /jobs/{id}` → `GET /artifacts/{id}` for path/metadata
+- Batch transfers use a **5-worker pool**; jobs run server-side, so popup/service-worker restarts cannot strand in-flight downloads
+- X cookies never travel over HTTP: the native host (`write_engine_cookies`) writes a 0600 Netscape jar to disk, the job references it via `cookies_file`, and `clear_engine_cookies` deletes it when the transfer ends
 - DB tracking: `engineArtifactId`, `enginePath`, `engineIngestedAt` on `XBookmark` (schema v4)
-- Progress tracked via `chrome.storage.local` (engine_status, engine_batchStatus, etc.)
-- Settings: `engine_projectPath` + `engine_baseUrl` in `chrome.storage.local`; validated via the host's `validate_engine` action
+- Progress tracked via `chrome.storage.local` (engine_status, engine_batchStatus, engine_batchStartedAt, etc.)
+- Settings: `engine_baseUrl` + `engine_apiToken` in `chrome.storage.local`; validated via `GET /health` + `GET /settings/doctor?op=acquire.url`
 - Catalog link: `<engine_baseUrl>/ui/catalog/<artifactId>` (default `http://127.0.0.1:8000`)
-- Requires `uv` + a media_engine checkout with `uv sync --extra acquire-url`; installer writes `engine-config.json` next to the host
+- Requires a running `med web start` (or `med api start`) server and a token from `med api token create --label unos-extension`
 
 ### 5. Database Schema (Dexie)
 
@@ -341,8 +341,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 *media_engine:*
 - `X_ENGINE_DOWNLOAD` - Send a tweet video to media_engine (fire-and-forget; params: `tweetUrl, tweetId?`)
 - `X_ENGINE_BATCH` - Send multiple bookmarks (fire-and-forget; params: `tweetIds: string[]`)
-- `X_GET_ENGINE_SETTINGS` - Get project path, base URL, unsent video count
-- `X_SET_ENGINE_SETTINGS` - Validate via native host and save (params: `projectPath?, baseUrl?`)
+- `X_GET_ENGINE_SETTINGS` - Get base URL, token presence, unsent video count
+- `X_SET_ENGINE_SETTINGS` - Validate server + token and save (params: `baseUrl?, apiToken?`)
 - `X_OPEN_IN_ENGINE` - Open `<baseUrl>/ui/catalog/<artifactId>` in a new tab (params: `artifactId`)
 - `X_CLEAR_ENGINE_STATUS` - Reset single-transfer state to idle
 - `X_CLEAR_STALE_ENGINE` - Clear stale sending state after a service worker restart
@@ -436,9 +436,9 @@ await sendToContentScript(tabId, 'EXTRACT_TWEETS');
 - `entrypoints/x-bookmarks-sync.content.ts` - Content script for X bookmark DOM extraction
 
 **Native host** (`native-host/` source, installed to `~/Library/Application Support/UNOS/native-host/`):
-- `unos_video_host.py` - Python native messaging host (actions: `download_video`, `ingest_bookmark`, `validate_folder`, `validate_engine`, `engine_download`)
-- `launch.sh` - Bash launcher that adds `~/.local/bin` + Homebrew to PATH (for uv/ffmpeg), sets up venv Python and stderr logging
-- `install.sh` - macOS installer: copies files to `~/Library/Application Support/UNOS/native-host/`, creates .venv with yt-dlp, auto-detects extension ID(s) from Chrome profiles, detects `uv` + the media_engine project and writes `engine-config.json`, registers native messaging manifest
+- `unos_video_host.py` - Python native messaging host (actions: `download_video`, `ingest_bookmark`, `validate_folder`, `write_engine_cookies`, `clear_engine_cookies`)
+- `launch.sh` - Bash launcher that adds Homebrew to PATH (for ffmpeg), sets up venv Python and stderr logging
+- `install.sh` - macOS installer: copies files to `~/Library/Application Support/UNOS/native-host/`, creates .venv with yt-dlp, auto-detects extension ID(s) from Chrome profiles, registers native messaging manifest
 - `requirements.txt` - Python dependencies (yt-dlp)
 - **Why installed outside project dir**: macOS Sequoia TCC restrictions prevent Chrome from executing scripts in `~/Documents/`. The install script copies files to `~/Library/Application Support/UNOS/` which is not subject to these restrictions.
 
@@ -545,7 +545,7 @@ await sendToContentScript(tabId, 'EXTRACT_TWEETS');
 - Monitors `chrome.storage.onChanged` for live sync/download/engine progress
 
 **EngineSettingsDialog.vue** - media_engine integration configuration:
-- media_engine project path + engine base URL fields, validated via the native host (`validate_engine`)
+- Engine server URL + API token fields (token masked, optional show/hide), validated against `GET /health` + `GET /settings/doctor?op=acquire.url`
 - Shows unsent-video count with "SEND ALL" batch action
 - NASA instrument panel styling (monospace labels, green/amber accents)
 
@@ -577,6 +577,7 @@ await sendToContentScript(tabId, 'EXTRACT_TWEETS');
 - **JSZip** (3.10.x): ZIP file creation for export
 - **TypeScript** (5.7.x): Type checking
 - **Vitest** (dev): Unit testing framework
+- **vue-tsc** (dev): SFC + template type checking — `npm run typecheck` checks `.vue` scripts too (plain `tsc` does not)
 
 ## Extension Manifest (Manifest V3)
 
@@ -622,7 +623,8 @@ npm run test:coverage
 src/__tests__/
 ├── setup.ts                    # Global mocks (Chrome APIs)
 ├── ExportService.test.ts       # Service tests
-├── MediaEngineService.test.ts  # media_engine integration tests
+├── MediaEngineService.test.ts  # media_engine REST integration tests
+├── XBookmarkService.test.ts    # bookmark URL + tab selection tests
 ├── migration.test.ts           # Dexie v3 → v4 backfill tests
 └── utils.test.ts               # Utility function tests
 ```

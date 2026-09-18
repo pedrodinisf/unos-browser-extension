@@ -8,7 +8,9 @@ vi.mock('../db/schema', () => ({
   getDatabase: vi.fn(),
 }));
 
-const PROJECT = '/Users/test/PROJECTS/media_engine';
+const BASE = 'http://127.0.0.1:8000';
+const TOKEN = 'test-token-secret';
+const COOKIE_PATH = '/Users/test/Library/Application Support/UNOS/native-host/engine-cookies.txt';
 
 function createBookmark(overrides: Partial<XBookmark> = {}): XBookmark {
   return {
@@ -66,162 +68,275 @@ function setFakeDb(bookmarks: XBookmark[]) {
   return fake;
 }
 
+function jsonResponse(status: number, body: unknown): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 ? 'OK' : 'Error',
+    json: async () => body,
+  } as unknown as Response;
+}
+
+/** Configure fetched paths → responses; unmatched paths reject like a dead server. */
+function mockFetchRoutes(routes: Record<string, (init?: RequestInit) => Response>) {
+  mockFetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+    const parsed = new URL(String(input));
+    const route = routes[parsed.pathname + parsed.search];
+    if (!route) return Promise.reject(new TypeError('Failed to fetch'));
+    return Promise.resolve(route(init));
+  });
+}
+
+const mockFetch = vi.fn();
+
+function setCredentials(withToken = true) {
+  localStorageData.engine_baseUrl = BASE;
+  if (withToken) localStorageData.engine_apiToken = TOKEN;
+}
+
+function defaultNativeResponses() {
+  mockSendNativeMessage.mockImplementation((_host, message, callback) => {
+    if (message.action === 'write_engine_cookies') {
+      callback({ success: true, cookiePath: COOKIE_PATH, cookieCount: 1 });
+    } else if (message.action === 'clear_engine_cookies') {
+      callback({ success: true });
+    } else {
+      callback({ success: false, error: `unexpected action ${message.action}` });
+    }
+  });
+}
+
+function defaultCookies() {
+  mockCookies.getAll.mockImplementation(() => Promise.resolve([
+    {
+      name: 'auth_token', value: 'value', domain: '.x.com', path: '/',
+      secure: true, httpOnly: true, hostOnly: false, session: false, sameSite: 'unspecified', storeId: '0',
+    },
+  ]));
+}
+
 describe('MediaEngineService', () => {
   let service: MediaEngineService;
 
   beforeEach(() => {
     service = new MediaEngineService();
-    mockCookies.getAll.mockImplementation(() => Promise.resolve([]));
+    vi.stubGlobal('fetch', mockFetch);
+    defaultCookies();
+    defaultNativeResponses();
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
     mockRuntime.lastError = null;
   });
 
   describe('getSettings', () => {
     it('should return defaults when nothing is configured', async () => {
       const settings = await service.getSettings();
-      expect(settings.projectPath).toBe('');
-      expect(settings.baseUrl).toBe('http://127.0.0.1:8000');
-      expect(settings.defaultBaseUrl).toBe('http://127.0.0.1:8000');
+      expect(settings.baseUrl).toBe(BASE);
+      expect(settings.defaultBaseUrl).toBe(BASE);
+      expect(settings.hasToken).toBe(false);
     });
 
-    it('should read persisted settings and strip trailing slashes from the base URL', async () => {
-      localStorageData.engine_projectPath = PROJECT;
+    it('should report a stored token and strip trailing slashes', async () => {
       localStorageData.engine_baseUrl = 'http://127.0.0.1:9000/';
+      localStorageData.engine_apiToken = TOKEN;
 
       const settings = await service.getSettings();
-      expect(settings.projectPath).toBe(PROJECT);
       expect(settings.baseUrl).toBe('http://127.0.0.1:9000');
+      expect(settings.hasToken).toBe(true);
     });
   });
 
   describe('setSettings', () => {
-    it('should validate via the native host and persist the resolved values', async () => {
-      mockSendNativeMessage.mockImplementation((_app, _msg, callback) => {
-        callback({ success: true, engineProject: PROJECT, uvPath: '/usr/local/bin/uv', venvReady: true });
+    it('should reject an empty token without calling the server', async () => {
+      const result = await service.setSettings({ baseUrl: BASE });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('API token is required');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should surface an unreachable server', async () => {
+      mockFetch.mockRejectedValue(new TypeError('Failed to fetch'));
+      const result = await service.setSettings({ baseUrl: BASE, apiToken: TOKEN });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('not reachable');
+    });
+
+    it('should reject an invalid token (401 from doctor)', async () => {
+      mockFetchRoutes({
+        '/health': () => jsonResponse(200, { status: 'ok' }),
+        '/settings/doctor?op=acquire.url': () => jsonResponse(401, { detail: 'invalid bearer' }),
       });
 
-      const result = await service.setSettings({
-        projectPath: PROJECT,
-        baseUrl: 'http://localhost:8123/',
+      const result = await service.setSettings({ baseUrl: BASE, apiToken: TOKEN });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid media_engine API token');
+      expect(localStorageData.engine_apiToken).toBeUndefined();
+    });
+
+    it('should reject a server without a working acquire.url backend', async () => {
+      mockFetchRoutes({
+        '/health': () => jsonResponse(200, { status: 'ok' }),
+        '/settings/doctor?op=acquire.url': () => jsonResponse(200, {
+          summary: { ok: 0, degraded: 0, unavailable: 1 },
+          ops: [{ op_name: 'acquire.url', overall: 'unavailable' }],
+        }),
       });
 
+      const result = await service.setSettings({ baseUrl: BASE, apiToken: TOKEN });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('uv sync --extra acquire-url');
+    });
+
+    it('should persist base URL and token after successful validation', async () => {
+      mockFetchRoutes({
+        '/health': () => jsonResponse(200, { status: 'ok' }),
+        '/settings/doctor?op=acquire.url': (init) => {
+          const headers = (init?.headers || {}) as Record<string, string>;
+          expect(headers.Authorization).toBe(`Bearer ${TOKEN}`);
+          return jsonResponse(200, {
+            summary: { ok: 1, degraded: 0, unavailable: 0 },
+            ops: [{ op_name: 'acquire.url', overall: 'ok' }],
+          });
+        },
+      });
+
+      const result = await service.setSettings({ baseUrl: 'http://localhost:9000/', apiToken: TOKEN });
       expect(result.success).toBe(true);
-      expect(result.projectPath).toBe(PROJECT);
-      expect(result.baseUrl).toBe('http://localhost:8123');
-      expect(mockSendNativeMessage).toHaveBeenCalledWith(
-        'com.unos.video_downloader',
-        expect.objectContaining({ action: 'validate_engine', engineProject: PROJECT }),
-        expect.any(Function),
-      );
-      expect(localStorageData.engine_projectPath).toBe(PROJECT);
-      expect(localStorageData.engine_baseUrl).toBe('http://localhost:8123');
-    });
-
-    it('should surface native host validation errors', async () => {
-      mockSendNativeMessage.mockImplementation((_app, _msg, callback) => {
-        callback({ success: false, error: 'media_engine venv not ready' });
-      });
-
-      const result = await service.setSettings({ projectPath: PROJECT });
-      expect(result.success).toBe(false);
-      expect(result.error).toBe('media_engine venv not ready');
-      expect(localStorageData.engine_projectPath).toBeUndefined();
-    });
-
-    it('should reject an empty project path without calling the host', async () => {
-      const result = await service.setSettings({ projectPath: '   ' });
-      expect(result.success).toBe(false);
-      expect(mockSendNativeMessage).not.toHaveBeenCalled();
+      expect(result.baseUrl).toBe('http://localhost:9000');
+      expect(localStorageData.engine_baseUrl).toBe('http://localhost:9000');
+      expect(localStorageData.engine_apiToken).toBe(TOKEN);
     });
   });
 
   describe('downloadToEngine', () => {
-    it('should error without calling the native host when unconfigured', async () => {
-      const response = await service.downloadToEngine('https://x.com/tester/status/111', '111');
+    it('should fail when no X cookies are available', async () => {
+      setCredentials();
+      mockCookies.getAll.mockImplementation(() => Promise.resolve([]));
 
+      const response = await service.downloadToEngine('https://x.com/tester/status/111', '111');
       expect(response.success).toBe(false);
-      expect(response.error).toContain('not configured');
-      expect(mockSendNativeMessage).not.toHaveBeenCalled();
-      expect(localStorageData.engine_status).toBe('error');
+      expect(response.error).toContain('cookies');
+      expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('should send the engine_download message with sanitized URL and cookies', async () => {
-      localStorageData.engine_projectPath = PROJECT;
-      mockCookies.getAll.mockImplementation((query?: unknown) => {
-        const domain = (query as { domain?: string } | undefined)?.domain;
-        if (domain === '.twitter.com') {
-          return Promise.resolve([
-            {
-              name: 'auth_token', value: 'twitter-value', domain: '.twitter.com', path: '/',
-              secure: true, httpOnly: true, hostOnly: false, session: false, sameSite: 'unspecified', storeId: '0',
-            },
-          ]);
-        }
-        return Promise.resolve([
-          {
-            name: 'auth_token', value: 'x-value', domain: '.x.com', path: '/',
-            secure: true, httpOnly: true, hostOnly: false, session: false, sameSite: 'unspecified', storeId: '0',
-            expirationDate: 123,
-          },
-        ]);
-      });
-      mockSendNativeMessage.mockImplementation((_app, _msg, callback) => {
-        callback({
-          success: true,
-          artifactId: 'abc123',
-          filePath: '/store/ab/abc123.mp4',
-          kind: 'video',
-          metadata: { duration: 9.5 },
-        });
-      });
+    it('should submit a job, poll it, persist the artifact and clear the jar', async () => {
+      vi.useFakeTimers();
+      setCredentials();
       const { modifications } = setFakeDb([createBookmark()]);
 
-      const response = await service.downloadToEngine('https://x.com/tester/status/111?s=20', '111');
+      let pollCount = 0;
+      mockFetchRoutes({
+        '/run': (init) => {
+          const body = JSON.parse(String(init?.body));
+          expect(body.op).toBe('acquire.url');
+          expect(body.backend).toBe('yt-dlp');
+          expect(body.params.url).toBe('https://x.com/tester/status/111');
+          expect(body.params.cookies_file).toBe(COOKIE_PATH);
+          return jsonResponse(202, { job_id: 'job-1' });
+        },
+        '/jobs/job-1': () => {
+          pollCount++;
+          return jsonResponse(200, pollCount < 2
+            ? { job: { id: 'job-1', status: 'running' }, outputs: [] }
+            : { job: { id: 'job-1', status: 'completed' }, outputs: [{ id: 'art-1', kind: 'video' }] });
+        },
+        '/artifacts/art-1': () => jsonResponse(200, {
+          id: 'art-1', kind: 'video', path: '/store/art-1.mp4', metadata: { duration: 9.5 },
+        }),
+      });
+
+      const pending = service.downloadToEngine('https://x.com/tester/status/111?s=20', '111');
+      await vi.advanceTimersByTimeAsync(2000);
+      const response = await pending;
+      vi.useRealTimers();
 
       expect(response.success).toBe(true);
-      expect(response.artifactId).toBe('abc123');
-      expect(mockSendNativeMessage).toHaveBeenCalledTimes(1);
-
-      const [host, payload] = mockSendNativeMessage.mock.calls[0]!;
-      expect(host).toBe('com.unos.video_downloader');
-      expect(payload).toMatchObject({
-        action: 'engine_download',
-        url: 'https://x.com/tester/status/111',
-        engineProject: PROJECT,
-      });
-      // x.com cookies win the dedup over twitter.com
-      expect(payload.cookies).toHaveLength(1);
-      expect(payload.cookies[0].value).toBe('x-value');
+      expect(response.artifactId).toBe('art-1');
+      expect(response.filePath).toBe('/store/art-1.mp4');
+      expect(response.metadata).toEqual({ duration: 9.5 });
 
       expect(modifications).toHaveLength(1);
-      expect(modifications[0]!.tweetId).toBe('111');
-      expect(modifications[0]!.changes.engineArtifactId).toBe('abc123');
-      expect(modifications[0]!.changes.enginePath).toBe('/store/ab/abc123.mp4');
+      expect(modifications[0]!.changes.engineArtifactId).toBe('art-1');
+      expect(modifications[0]!.changes.enginePath).toBe('/store/art-1.mp4');
       expect(modifications[0]!.changes.engineIngestedAt).toBeTypeOf('number');
       expect(localStorageData.engine_status).toBe('done');
-      expect(localStorageData.engine_artifactId).toBe('abc123');
+
+      const actions = mockSendNativeMessage.mock.calls.map(c => (c[1] as { action: string }).action);
+      expect(actions).toEqual(['write_engine_cookies', 'clear_engine_cookies']);
     });
 
-    it('should set an error state and skip the DB update when the engine fails', async () => {
-      localStorageData.engine_projectPath = PROJECT;
-      mockSendNativeMessage.mockImplementation((_app, _msg, callback) => {
-        callback({ success: false, error: 'yt-dlp failed (exit 1)' });
-      });
+    it('should map a failed job to an error state without a DB write', async () => {
+      setCredentials();
       const { modifications } = setFakeDb([createBookmark()]);
+
+      mockFetchRoutes({
+        '/run': () => jsonResponse(202, { job_id: 'job-2' }),
+        '/jobs/job-2': () => jsonResponse(200, {
+          job: {
+            id: 'job-2',
+            status: 'failed',
+            error: { error_class: 'RuntimeError', message: 'yt-dlp failed (exit 1)' },
+          },
+          outputs: [],
+        }),
+      });
 
       const response = await service.downloadToEngine('https://x.com/tester/status/111', '111');
 
       expect(response.success).toBe(false);
+      expect(response.error).toContain('yt-dlp failed');
       expect(modifications).toHaveLength(0);
       expect(localStorageData.engine_status).toBe('error');
-      expect(localStorageData.engine_error).toBe('yt-dlp failed (exit 1)');
     });
 
-    it('should translate native messaging host errors into actionable messages', async () => {
-      localStorageData.engine_projectPath = PROJECT;
-      mockSendNativeMessage.mockImplementation((_app, _msg, callback) => {
+    it('should cancel the job and report a timeout when polling exceeds the cap', async () => {
+      vi.useFakeTimers();
+      setCredentials();
+      setFakeDb([createBookmark()]);
+
+      const deletes: string[] = [];
+      mockFetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const parsed = new URL(String(input));
+        if (parsed.pathname === '/run') {
+          return Promise.resolve(jsonResponse(202, { job_id: 'job-t' }));
+        }
+        if (parsed.pathname === '/jobs/job-t' && init?.method === 'DELETE') {
+          deletes.push(parsed.pathname);
+          return Promise.resolve(jsonResponse(200, { job_id: 'job-t', cancelled: true }));
+        }
+        if (parsed.pathname === '/jobs/job-t') {
+          return Promise.resolve(jsonResponse(200, {
+            job: { id: 'job-t', status: 'running' },
+            outputs: [],
+          }));
+        }
+        return Promise.reject(new TypeError('Failed to fetch'));
+      });
+
+      const pending = service.downloadToEngine('https://x.com/tester/status/111', '111');
+      await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+      const response = await pending;
+      vi.useRealTimers();
+
+      expect(response.success).toBe(false);
+      expect(response.error).toContain('timed out');
+      expect(deletes).toEqual(['/jobs/job-t']);
+      expect(localStorageData.engine_status).toBe('error');
+    });
+
+    it('should map a missing token to an actionable 401 message', async () => {
+      setCredentials(false);
+      const response = await service.downloadToEngine('https://x.com/tester/status/111', '111');
+      expect(response.success).toBe(false);
+      expect(response.error).toContain('Invalid media_engine API token');
+    });
+
+    it('should translate native host errors', async () => {
+      setCredentials();
+      mockSendNativeMessage.mockImplementation((_host, _message, callback) => {
         mockRuntime.lastError = { message: 'Specified native messaging host not found.' };
         callback(undefined);
       });
@@ -234,39 +349,86 @@ describe('MediaEngineService', () => {
   });
 
   describe('sendBatch', () => {
-    it('should process each bookmark sequentially and count successes', async () => {
-      localStorageData.engine_projectPath = PROJECT;
-      const bookmarks = [
-        createBookmark({ tweetId: '1', tweetUrl: 'https://x.com/a/status/1' }),
-        createBookmark({ tweetId: '2', tweetUrl: 'https://x.com/a/status/2' }),
-      ];
+    it('should process items with at most 5 concurrent jobs', async () => {
+      setCredentials();
+      const bookmarks = Array.from({ length: 12 }, (_, i) =>
+        createBookmark({ tweetId: String(i), tweetUrl: `https://x.com/a/status/${i}` }));
       setFakeDb(bookmarks);
 
-      let call = 0;
-      mockSendNativeMessage.mockImplementation((_app, _msg, callback) => {
-        call++;
-        callback(
-          call === 1
-            ? { success: true, artifactId: 'a1', filePath: '/store/a1.mp4' }
-            : { success: false, error: 'boom' },
-        );
+      let activeRuns = 0;
+      let maxActiveRuns = 0;
+
+      mockFetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const path = url.slice(BASE.length);
+        if (path === '/run') {
+          const body = JSON.parse(String(init?.body));
+          const tweetId = body.params.url.split('/').pop();
+          activeRuns++;
+          maxActiveRuns = Math.max(maxActiveRuns, activeRuns);
+          return new Promise((resolve) => {
+            setTimeout(() => {
+              activeRuns--;
+              resolve(jsonResponse(202, { job_id: `job-${tweetId}` }));
+            }, 5);
+          });
+        }
+        if (path.startsWith('/jobs/')) {
+          const jobId = path.split('/').pop()!;
+          const artifactId = `art-${jobId}`;
+          return Promise.resolve(jsonResponse(200, {
+            job: { id: jobId, status: 'completed' },
+            outputs: [{ id: artifactId, kind: 'video' }],
+          }));
+        }
+        if (path.startsWith('/artifacts/')) {
+          const artifactId = path.split('/').pop()!;
+          return Promise.resolve(jsonResponse(200, {
+            id: artifactId, kind: 'video', path: `/store/${artifactId}.mp4`, metadata: {},
+          }));
+        }
+        return Promise.reject(new TypeError('Failed to fetch'));
       });
 
-      const result = await service.sendBatch(['1', '2']);
+      const result = await service.sendBatch(bookmarks.map(b => b.tweetId));
 
-      expect(result).toEqual({ processed: 2, succeeded: 1, failed: 1 });
-      expect(mockSendNativeMessage).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({ processed: 12, succeeded: 12, failed: 0 });
+      expect(maxActiveRuns).toBeLessThanOrEqual(5);
+      expect(maxActiveRuns).toBeGreaterThan(1);
       expect(localStorageData.engine_batchStatus).toBe('done');
-      expect(localStorageData.engine_batchProcessed).toBe(2);
-      expect(localStorageData.engine_batchTotal).toBe(2);
+      expect(localStorageData.engine_batchProcessed).toBe(12);
+      expect(localStorageData.engine_batchTotal).toBe(12);
     });
 
-    it('should count missing bookmarks as failures', async () => {
-      localStorageData.engine_projectPath = PROJECT;
+    it('should count missing bookmarks as failures without touching cookies or the server', async () => {
+      setCredentials();
       setFakeDb([]);
 
       const result = await service.sendBatch(['does-not-exist']);
       expect(result).toEqual({ processed: 1, succeeded: 0, failed: 1 });
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockSendNativeMessage).not.toHaveBeenCalled();
+      expect(localStorageData.engine_batchStatus).toBe('done');
+    });
+
+    it('should no-op an empty batch', async () => {
+      setCredentials();
+      setFakeDb([]);
+
+      const result = await service.sendBatch([]);
+      expect(result).toEqual({ processed: 0, succeeded: 0, failed: 0 });
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockSendNativeMessage).not.toHaveBeenCalled();
+    });
+
+    it('should not require a logged-in session when no bookmark has video', async () => {
+      setCredentials();
+      setFakeDb([createBookmark({ tweetId: '1', hasVideo: false })]);
+      mockCookies.getAll.mockImplementation(() => Promise.resolve([]));
+
+      const result = await service.sendBatch(['1']);
+      expect(result).toEqual({ processed: 1, succeeded: 0, failed: 1 });
+      expect(mockFetch).not.toHaveBeenCalled();
       expect(mockSendNativeMessage).not.toHaveBeenCalled();
     });
   });
@@ -293,20 +455,64 @@ describe('MediaEngineService', () => {
   });
 
   describe('clearStaleState', () => {
-    it('should clear a stale sending state', async () => {
+    it('should clear a stale single-transfer state', async () => {
       localStorageData.engine_status = 'sending';
-      localStorageData.engine_startedAt = Date.now() - 20 * 60 * 1000;
+      localStorageData.engine_startedAt = Date.now() - 40 * 60 * 1000;
 
       expect(await service.clearStaleState()).toBe(true);
       expect(localStorageData.engine_status).toBe('idle');
     });
 
-    it('should leave a fresh sending state alone', async () => {
+    it('should clear leftover state immediately after a service worker restart', async () => {
       localStorageData.engine_status = 'sending';
       localStorageData.engine_startedAt = Date.now();
+      localStorageData.engine_batchStatus = 'sending';
+      localStorageData.engine_batchStartedAt = Date.now();
+
+      // A fresh service instance has no in-flight transfer, so both states
+      // must be leftovers from a previous lifecycle.
+      expect(await service.clearStaleState()).toBe(true);
+      expect(localStorageData.engine_status).toBe('idle');
+      expect(localStorageData.engine_batchStatus).toBe('idle');
+    });
+
+    it('should not clear state while a transfer is active in this instance', async () => {
+      setCredentials();
+      let runStarted = false;
+      let resolveRun: (r: Response) => void = () => {};
+      mockFetch.mockImplementation((input: RequestInfo | URL) => {
+        const path = new URL(String(input)).pathname;
+        if (path === '/run') {
+          runStarted = true;
+          return new Promise<Response>((resolve) => { resolveRun = resolve; });
+        }
+        if (path.startsWith('/jobs/')) {
+          return Promise.resolve(jsonResponse(200, {
+            job: { id: 'job-x', status: 'cancelled' },
+            outputs: [],
+          }));
+        }
+        return Promise.reject(new TypeError('Failed to fetch'));
+      });
+
+      const pending = service.downloadToEngine('https://x.com/tester/status/111', '111');
+      while (!runStarted) await new Promise((r) => setTimeout(r, 0));
 
       expect(await service.clearStaleState()).toBe(false);
       expect(localStorageData.engine_status).toBe('sending');
+
+      resolveRun(jsonResponse(202, { job_id: 'job-x' }));
+      const response = await pending;
+      expect(response.success).toBe(false);
+      expect(localStorageData.engine_status).toBe('error');
+    });
+
+    it('should clear a stale batch state', async () => {
+      localStorageData.engine_batchStatus = 'sending';
+      localStorageData.engine_batchStartedAt = Date.now() - 40 * 60 * 1000;
+
+      expect(await service.clearStaleState()).toBe(true);
+      expect(localStorageData.engine_batchStatus).toBe('idle');
     });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isBookmarksUrl, BOOKMARKS_URL, BOOKMARKS_MATCH_PATTERNS } from '../services/XBookmarkService';
+import { isBookmarksUrl, pickBookmarksTab, BOOKMARKS_URL, BOOKMARKS_MATCH_PATTERNS } from '../services/XBookmarkService';
 
 describe('XBookmarkService URL helpers', () => {
   describe('isBookmarksUrl', () => {
@@ -38,6 +38,36 @@ describe('XBookmarkService URL helpers', () => {
 
     it('should use the /i/history route as the canonical fallback URL', () => {
       expect(isBookmarksUrl(BOOKMARKS_URL)).toBe(true);
+    });
+  });
+
+  describe('pickBookmarksTab', () => {
+    it('should pick the tab on the Bookmarks timeline', () => {
+      expect(pickBookmarksTab([
+        { id: 1, url: 'https://x.com/home' },
+        { id: 2, url: 'https://x.com/i/history' },
+      ])).toBe(2);
+    });
+
+    it('should skip Likes and History sub-tabs', () => {
+      expect(pickBookmarksTab([
+        { id: 1, url: 'https://x.com/i/history/likes' },
+        { id: 2, url: 'https://x.com/i/history/history' },
+      ])).toBeNull();
+    });
+
+    it('should accept the legacy bookmarks route', () => {
+      expect(pickBookmarksTab([
+        { id: 7, url: 'https://twitter.com/i/bookmarks' },
+      ])).toBe(7);
+    });
+
+    it('should return null when no tab has an id', () => {
+      expect(pickBookmarksTab([{ url: 'https://x.com/i/history' }])).toBeNull();
+    });
+
+    it('should return null for an empty tab list', () => {
+      expect(pickBookmarksTab([])).toBeNull();
     });
   });
 });

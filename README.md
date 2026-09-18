@@ -48,7 +48,7 @@ A Chrome extension for continuous tab tracking with relationship analysis, metad
 - **Export** — JSON or Markdown export (Markdown groups by month with stats)
 - **Video Download** — Download videos from bookmarked tweets via yt-dlp with separate audio extraction (requires native host setup)
 - **Quick Video Download** — Header toolbar button auto-detects bookmarked tweets with video on the active tab
-- **media_engine Integration** — Send bookmarked videos to a local media_engine content-addressed store; ENGD badge links straight to the engine catalog (requires `uv` + a media_engine checkout)
+- **media_engine Integration** — Send bookmarked videos to a running local media_engine server (5 parallel jobs via its REST API); ENGD badge links straight to the engine catalog
 - **Media Indicators** — Image count badges and video flags on each bookmark
 - **Analytics Dashboard** — LOG tab with acquisition timeline, top authors, content composition, and tweet age distribution
 
@@ -151,52 +151,64 @@ Popup "Download Video" → Background service worker → chrome.cookies.getAll (
 
 ### media_engine Integration (Optional)
 
-Videos can also be sent to a local **media_engine** installation instead of (or in addition to)
-`~/Downloads`. The engine downloads into a content-addressed store and returns a typed Video
-artifact that is immediately available to its catalog and Studio.
+Videos can also be sent to a locally running **media_engine** server instead of (or in addition
+to) `~/Downloads`. The engine downloads into a content-addressed store — several URLs in parallel
+— and returns typed Video artifacts that are immediately available to its catalog and Studio.
 
 **Prerequisites**
 
-```bash
-# uv (Python package/project manager used by media_engine)
-curl -LsSf https://astral.sh/uv/install.sh | sh
+1. A media_engine install with the `acquire-url` extra (yt-dlp backend):
 
-# media_engine project with the acquire-url extra (yt-dlp backend)
-cd /path/to/media_engine
-uv sync --extra acquire-url
-```
+   ```bash
+   cd /path/to/media_engine
+   uv sync --extra acquire-url
+   ```
 
-Re-run `cd native-host && ./install.sh` — it detects `uv` and the media_engine project
-(`$MEDIA_ENGINE_PROJECT`, or common locations like `~/Documents/PROJECTS/media_engine`)
-and writes `engine-config.json` next to the host. The project path can also be set or
-overridden in the popup's **ENG** settings dialog.
+2. The engine server running:
+
+   ```bash
+   uv run med web start        # UI + REST at http://127.0.0.1:8000
+   # or: uv run med api start  # REST only
+   ```
+
+3. An API token (printed once — paste it into the popup's **ENG** settings):
+
+   ```bash
+   uv run med api token create --label unos-extension
+   ```
+
+Open the popup's **ENG** dialog, paste the token, and click **TEST & SAVE**. Validation calls
+`GET /health` and `GET /settings/doctor?op=acquire.url`, so a down server, a bad token, or a
+missing yt-dlp backend fails with an actionable message instead of at download time.
 
 **How It Works**
 
 ```
-Popup "Engine" → Background → chrome.cookies.getAll (X auth)
-    → sendNativeMessage(engine_download) → host writes temp Netscape cookie jar
-    → uv run --no-sync --project <engine> med --json acquire-url <tweet-url> --cookies <jar>
-    → media_engine stores the Video artifact, prints [{id, kind, path, metadata, ...}]
-    → artifactId + path saved on the XBookmark; ENGD badge opens <engine>/ui/catalog/<id>
+Popup "Engine" → Background → native host writes a 0600 Netscape cookie jar
+    → POST /run {op: "acquire.url", params: {url, cookies_file, quality: "best"}}
+    → poll GET /jobs/{id} until terminal → GET /artifacts/{id} for path/metadata
+    → artifactId + path saved on the XBookmark; ENGD badge opens <base>/ui/catalog/<id>
 ```
 
-- `--no-sync` is used deliberately: a bare `uv sync` would strip the installed `acquire-url` extra
-- The host venv's `bin/` is prepended to the subprocess PATH so the engine can find `yt-dlp`
-  even when its own environment is core-only
-- Cookie files are excluded from the engine's cache key, so refreshing your X session never
-  re-downloads an already-acquired URL
-- Cookie values are never logged; the temp jar is deleted in a `finally` block
+- Batch transfers run **5 jobs in parallel**; downloads execute server-side, so closing the
+  popup or a service-worker restart never strands an in-flight acquisition
+- Cookie values never travel over HTTP: the native host writes a Netscape jar (mode 0600) that
+  the server reads locally, and deletes it when the transfer finishes
+- Cookie jars are excluded from the engine's content-addressed cache key, so refreshing your X
+  session never re-downloads an already-acquired URL
+- The API token is stored in `chrome.storage.local` and is only ever sent to the configured
+  engine URL (as a bearer header — never in a URL or log)
 - Engine settings → **SEND ALL** queues every video bookmark not yet sent, with live progress
 
 **Troubleshooting**
 
 | Error | Fix |
 |-------|-----|
-| "uv not found" | Install uv, then re-run `./install.sh` |
-| "media_engine venv not ready" | `cd /path/to/media_engine && uv sync --extra acquire-url` |
-| "media_engine not configured" | Re-run `./install.sh` or set the project path in Engine settings |
-| Engine transfer timed out | Check `native-host.log`; large videos can take longer than 15 minutes |
+| "media_engine server not reachable" | Start it with `med web start` (or `med api start`) |
+| "Invalid media_engine API token" | `med api token create --label unos-extension`, paste it in ENG settings |
+| "no working acquire.url backend" | `cd /path/to/media_engine && uv sync --extra acquire-url`, then restart the server |
+| "No X/Twitter cookies found" | Make sure you're logged in to `x.com` in Chrome |
+| Job timed out | Jobs are capped at 30 minutes; the extension cancels the job server-side |
 
 ### Troubleshooting
 
@@ -282,7 +294,7 @@ unos_browser_extension/
 │   │   ├── CaptureService.ts          # Scroll screenshot orchestration
 │   │   ├── XBookmarkService.ts        # X bookmark sync & management
 │   │   ├── VideoDownloadService.ts    # Video download via native messaging
-│   │   ├── MediaEngineService.ts      # media_engine (content-addressed store) integration
+│   │   ├── MediaEngineService.ts      # media_engine REST integration (jobs, batch, cookies)
 │   │   └── ContentIngestionService.ts # Local content download pipeline
 │   ├── utils/
 │   │   ├── debounce.ts                # Debounce/throttle utilities
@@ -455,7 +467,8 @@ npm run test:coverage
 src/__tests__/
 ├── setup.ts                    # Chrome API mocks
 ├── ExportService.test.ts       # Export functionality tests
-├── MediaEngineService.test.ts  # media_engine native messaging + state tests
+├── MediaEngineService.test.ts  # media_engine REST + state tests
+├── XBookmarkService.test.ts    # bookmark URL helper + tab selection tests
 ├── migration.test.ts           # Dexie v3 → v4 backfill tests
 └── utils.test.ts               # Utility function tests (UUID, hash, debounce)
 ```
@@ -465,7 +478,8 @@ src/__tests__/
 | Category | Tests | Description |
 |----------|-------|-------------|
 | ExportService | 23 | CSV generation, escaping, ZIP creation, JSON export |
-| MediaEngineService | 15 | Native message shape, cookie dedup, DB writes, batch, stale state |
+| MediaEngineService | 23 | REST job flow, settings validation, cookie jar, 5-parallel batch, timeout, stale state |
+| XBookmarkService | 11 | `/i/history` URL safety, Likes/History sub-tab rejection, tab selection |
 | Dexie Migration | 2 | v3 → v4 engine field backfill |
 | UUID Utils | 4 | UUID v4 format validation, uniqueness |
 | Hash Utils | 9 | URL normalization, consistent hashing |

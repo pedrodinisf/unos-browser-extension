@@ -43,6 +43,18 @@ export function isBookmarksUrl(url: string | undefined | null): boolean {
 }
 
 /**
+ * Pick the first tab that is genuinely on the Bookmarks timeline.
+ * A tab parked on `/i/history/likes` or `/i/history/history` is ignored so
+ * the sync never extracts the wrong list. Exported for unit testing.
+ */
+export function pickBookmarksTab(
+  tabs: Array<{ id?: number; url?: string }>,
+): number | null {
+  const match = tabs.find((tab) => tab.id !== undefined && isBookmarksUrl(tab.url));
+  return match?.id ?? null;
+}
+
+/**
  * Send a message to the X bookmarks content script in a specific tab
  */
 function sendToContentScript(
@@ -650,9 +662,9 @@ export class XBookmarkService {
 
     // Prefer a tab that is actually on the Bookmarks timeline; a tab parked
     // on /i/history/likes or /i/history/history must not be synced.
-    const bookmarksTab = tabs.find((tab) => tab.id && isBookmarksUrl(tab.url));
-    if (bookmarksTab?.id) {
-      return bookmarksTab.id;
+    const existingTabId = pickBookmarksTab(tabs);
+    if (existingTabId !== null) {
+      return existingTabId;
     }
 
     // Create a new tab (not active so it doesn't steal focus)

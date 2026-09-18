@@ -9,12 +9,10 @@
 #   2. Creates a venv there with yt-dlp installed
 #   3. Registers the native messaging host manifest with Chrome
 #   4. Auto-detects extension ID(s) from Chrome profiles
-#   5. Detects uv + the media_engine project and writes engine-config.json
 #
 # Prerequisites:
 #   - python3
 #   - ffmpeg  (brew install ffmpeg — needed by yt-dlp for merging streams)
-#   - uv      (optional, for media_engine integration: https://docs.astral.sh/uv/)
 
 set -e
 
@@ -43,24 +41,6 @@ else
   echo "     Some video formats may not merge correctly without it." >&2
 fi
 
-# Detect uv (media_engine integration). Check known locations before PATH.
-UV_PATH=""
-for cand in "$HOME/.local/bin/uv" "/opt/homebrew/bin/uv" "/usr/local/bin/uv"; do
-  if [ -x "$cand" ]; then
-    UV_PATH="$cand"
-    break
-  fi
-done
-if [ -z "$UV_PATH" ] && command -v uv >/dev/null 2>&1; then
-  UV_PATH="$(command -v uv)"
-fi
-if [ -n "$UV_PATH" ]; then
-  echo "[OK] uv found: $UV_PATH"
-else
-  echo "[!!] uv not found. media_engine integration will be unavailable." >&2
-  echo "     Install with: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
-fi
-
 echo ""
 
 # ── Install native host files ──
@@ -72,6 +52,9 @@ mkdir -p "$INSTALL_DIR"
 cp "$SCRIPT_DIR/unos_video_host.py" "$INSTALL_DIR/unos_video_host.py"
 cp "$SCRIPT_DIR/requirements.txt"   "$INSTALL_DIR/requirements.txt" 2>/dev/null || true
 
+# Remove the obsolete CLI-mode config from pre-server versions (no longer read)
+rm -f "$INSTALL_DIR/engine-config.json"
+
 # Create launch.sh at the install location
 cat > "$INSTALL_DIR/launch.sh" << 'LAUNCHER'
 #!/bin/bash
@@ -82,8 +65,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG="$SCRIPT_DIR/native-host.log"
 echo "$(date '+%Y-%m-%d %H:%M:%S') [launch.sh] Started (pid=$$)" >> "$LOG"
 
-# Ensure Homebrew + uv binaries are in PATH — Chrome launches with minimal PATH
-export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+# Ensure Homebrew binaries (ffmpeg, etc.) are in PATH — Chrome launches with minimal PATH
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 PYTHON="$SCRIPT_DIR/.venv/bin/python3"
 SCRIPT="$SCRIPT_DIR/unos_video_host.py"
@@ -119,94 +102,6 @@ if [ -x "$VENV_DIR/bin/yt-dlp" ]; then
 else
   echo "Error: yt-dlp installation failed." >&2
   exit 1
-fi
-
-echo ""
-
-# ── Detect media_engine project and write engine-config.json ──
-
-ENGINE_CONFIG="$INSTALL_DIR/engine-config.json"
-ENGINE_PROJECT=""
-
-# Preserve an existing configured path if it still looks valid
-if [ -f "$ENGINE_CONFIG" ]; then
-  ENGINE_PROJECT="$(python3 -c "
-import json, sys
-try:
-    with open('$ENGINE_CONFIG') as f:
-        data = json.load(f)
-    print(data.get('engineProject') or data.get('engine_project') or '')
-except Exception:
-    print('')
-" 2>/dev/null)"
-  if [ -n "$ENGINE_PROJECT" ] && [ ! -f "$ENGINE_PROJECT/pyproject.toml" ]; then
-    echo "[!!] Previously configured media_engine path is no longer valid: $ENGINE_PROJECT" >&2
-    ENGINE_PROJECT=""
-  fi
-fi
-
-# Environment override wins over auto-detection
-if [ -z "$ENGINE_PROJECT" ] && [ -n "${MEDIA_ENGINE_PROJECT:-}" ]; then
-  ENGINE_PROJECT="$MEDIA_ENGINE_PROJECT"
-fi
-
-# Auto-detect from common project locations
-if [ -z "$ENGINE_PROJECT" ]; then
-  for cand in \
-    "$HOME/Documents/PROJECTS/media_engine" \
-    "$HOME/PROJECTS/media_engine" \
-    "$HOME/src/media_engine" \
-    "$HOME/media_engine" \
-    "$HOME/Documents/media_engine"; do
-    if [ -f "$cand/pyproject.toml" ]; then
-      ENGINE_PROJECT="$cand"
-      break
-    fi
-  done
-fi
-
-# Prompt as a last resort (blank = skip engine integration)
-if [ -z "$ENGINE_PROJECT" ] && [ -t 0 ]; then
-  echo "media_engine project not found automatically."
-  echo "Enter the media_engine project path (blank to skip engine integration):"
-  read -r ENGINE_PROJECT
-  ENGINE_PROJECT="${ENGINE_PROJECT/#\~/$HOME}"
-fi
-
-if [ -n "$ENGINE_PROJECT" ]; then
-  if [ -f "$ENGINE_PROJECT/pyproject.toml" ]; then
-    echo "[OK] media_engine project: $ENGINE_PROJECT"
-    if [ -n "$UV_PATH" ] && [ -x "$ENGINE_PROJECT/.venv/bin/med" ]; then
-      echo "[OK] media_engine venv ready: $ENGINE_PROJECT/.venv"
-    elif [ -n "$UV_PATH" ]; then
-      echo "[!!] media_engine venv not ready — run: cd $ENGINE_PROJECT && uv sync --extra acquire-url" >&2
-    fi
-  else
-    echo "[!!] Invalid media_engine path (no pyproject.toml): $ENGINE_PROJECT" >&2
-    echo "     Engine integration will need configuration in the extension settings." >&2
-    ENGINE_PROJECT=""
-  fi
-fi
-
-python3 - "$ENGINE_CONFIG" "$ENGINE_PROJECT" "$UV_PATH" << 'PYEOF'
-import json, sys
-from datetime import datetime, timezone
-
-path, project, uv_path = sys.argv[1], sys.argv[2], sys.argv[3]
-config = {
-    "engineProject": project,
-    "uvPath": uv_path,
-    "configuredAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-}
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(config, f, indent=2)
-    f.write("\n")
-PYEOF
-
-if [ -n "$ENGINE_PROJECT" ]; then
-  echo "[OK] Engine config written: $ENGINE_CONFIG"
-else
-  echo "[--] Engine integration not configured (feature stays disabled)."
 fi
 
 echo ""
@@ -293,8 +188,6 @@ echo ""
 echo "  Installed: $INSTALL_DIR"
 echo "  venv:      $VENV_DIR"
 echo "  yt-dlp:    $VENV_DIR/bin/yt-dlp"
-echo "  uv:        ${UV_PATH:-not found}"
-echo "  Engine:    ${ENGINE_PROJECT:-not configured}"
 echo "  Host:      $HOST_PATH"
 echo "  Manifest:  $MANIFEST_DIR/$MANIFEST_NAME.json"
 echo "  Origins:   $ORIGINS"

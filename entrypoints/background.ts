@@ -619,8 +619,8 @@ export default defineBackground(() => {
           case 'X_SET_ENGINE_SETTINGS': {
             const engineService = getMediaEngineService();
             const result = await engineService.setSettings({
-              projectPath: message.projectPath,
               baseUrl: message.baseUrl,
+              apiToken: message.apiToken,
             });
             sendResponse({ success: result.success, data: result, error: result.error });
             break;

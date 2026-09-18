@@ -35,11 +35,9 @@ const engineStatus = ref<'idle' | 'sending' | 'done' | 'error'>('idle');
 const engineTweetId = ref('');
 const engineError = ref('');
 const engineArtifactId = ref('');
-const enginePath = ref('');
 const engineBatchStatus = ref<'idle' | 'sending' | 'done' | 'error'>('idle');
 const engineBatchProcessed = ref(0);
 const engineBatchTotal = ref(0);
-const engineBatchCurrentTweetId = ref('');
 const engineBatchError = ref('');
 
 // Sort & filter state
@@ -218,9 +216,6 @@ function onStorageChanged(changes: Record<string, chrome.storage.StorageChange>,
   if (changes.engine_artifactId) {
     engineArtifactId.value = changes.engine_artifactId.newValue || '';
   }
-  if (changes.engine_path) {
-    enginePath.value = changes.engine_path.newValue || '';
-  }
   if (changes.engine_batchStatus) {
     engineBatchStatus.value = changes.engine_batchStatus.newValue || 'idle';
     if (changes.engine_batchStatus.newValue === 'done') {
@@ -232,9 +227,6 @@ function onStorageChanged(changes: Record<string, chrome.storage.StorageChange>,
   }
   if (changes.engine_batchTotal) {
     engineBatchTotal.value = changes.engine_batchTotal.newValue || 0;
-  }
-  if (changes.engine_batchCurrentTweetId) {
-    engineBatchCurrentTweetId.value = changes.engine_batchCurrentTweetId.newValue || '';
   }
   if (changes.engine_batchError) {
     engineBatchError.value = changes.engine_batchError.newValue || '';
@@ -446,7 +438,6 @@ async function clearEngineStatus() {
     engineTweetId.value = '';
     engineError.value = '';
     engineArtifactId.value = '';
-    enginePath.value = '';
   } catch { /* ignore */ }
 }
 
@@ -611,7 +602,7 @@ function setupObserver() {
   if (observer) observer.disconnect();
   observer = new IntersectionObserver(
     (entries) => {
-      if (entries[0].isIntersecting && hasMore.value && !loading.value && !loadingMore.value) {
+      if (entries[0]?.isIntersecting && hasMore.value && !loading.value && !loadingMore.value) {
         loadMore();
       }
     },
@@ -647,8 +638,8 @@ onMounted(async () => {
     [
       'xBookmarks_syncStatus',
       'xBookmarks_downloadStatus', 'xBookmarks_downloadTweetId', 'xBookmarks_downloadError', 'xBookmarks_downloadPath',
-      'engine_status', 'engine_tweetId', 'engine_error', 'engine_artifactId', 'engine_path',
-      'engine_batchStatus', 'engine_batchProcessed', 'engine_batchTotal', 'engine_batchCurrentTweetId', 'engine_batchError',
+      'engine_status', 'engine_tweetId', 'engine_error', 'engine_artifactId',
+      'engine_batchStatus', 'engine_batchProcessed', 'engine_batchTotal', 'engine_batchError',
     ],
     (data) => {
       if (data.xBookmarks_syncStatus === 'syncing' || data.xBookmarks_syncStatus === 'starting') {
@@ -678,9 +669,6 @@ onMounted(async () => {
       if (data.engine_artifactId) {
         engineArtifactId.value = data.engine_artifactId;
       }
-      if (data.engine_path) {
-        enginePath.value = data.engine_path;
-      }
       if (data.engine_batchStatus) {
         engineBatchStatus.value = data.engine_batchStatus;
       }
@@ -689,9 +677,6 @@ onMounted(async () => {
       }
       if (data.engine_batchTotal) {
         engineBatchTotal.value = data.engine_batchTotal;
-      }
-      if (data.engine_batchCurrentTweetId) {
-        engineBatchCurrentTweetId.value = data.engine_batchCurrentTweetId;
       }
       if (data.engine_batchError) {
         engineBatchError.value = data.engine_batchError;
@@ -1029,7 +1014,10 @@ defineExpose({ reset });
             <template v-else-if="engineTweetId === bm.tweetId && engineStatus === 'error'">
               <div class="xbm-engine-error-wrap">
                 <div class="xbm-engine-error-msg">Engine: {{ engineError }}</div>
-                <button class="xbm-engine-btn" @click.stop="sendToEngine(bm)">Retry</button>
+                <div class="xbm-engine-error-actions">
+                  <button class="xbm-engine-btn" @click.stop="sendToEngine(bm)">Retry</button>
+                  <button class="xbm-dismiss-btn" @click.stop="clearEngineStatus()" title="Dismiss">&times;</button>
+                </div>
               </div>
             </template>
             <template v-else-if="bm.engineIngestedAt || (engineTweetId === bm.tweetId && engineStatus === 'done')">
@@ -2099,6 +2087,12 @@ defineExpose({ reset });
 .xbm-engine-error-wrap {
   display: flex;
   flex-direction: column;
+  gap: 4px;
+}
+
+.xbm-engine-error-actions {
+  display: flex;
+  align-items: center;
   gap: 4px;
 }
 

@@ -6,16 +6,18 @@ const emit = defineEmits<{
   (e: 'send-all'): void;
 }>();
 
-const projectPath = ref('');
 const baseUrl = ref('');
 const defaultBaseUrl = ref('http://127.0.0.1:8000');
+const apiToken = ref('');
+const hasStoredToken = ref(false);
 const unsentVideoCount = ref(0);
 const validating = ref(false);
 const validated = ref(false);
 const validationError = ref('');
-const resolvedPath = ref('');
+const validatedBaseUrl = ref('');
+const showToken = ref(false);
 
-const configured = computed(() => projectPath.value.trim().length > 0);
+const configured = computed(() => hasStoredToken.value || apiToken.value.trim().length > 0);
 
 async function sendMessage<T>(message: Record<string, unknown>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -36,14 +38,14 @@ async function sendMessage<T>(message: Record<string, unknown>): Promise<T> {
 async function loadSettings() {
   try {
     const data = await sendMessage<{
-      projectPath: string;
       baseUrl: string;
       defaultBaseUrl: string;
+      hasToken: boolean;
       unsentVideoCount: number;
     }>({ type: 'X_GET_ENGINE_SETTINGS' });
-    projectPath.value = data.projectPath;
     baseUrl.value = data.baseUrl;
     defaultBaseUrl.value = data.defaultBaseUrl;
+    hasStoredToken.value = data.hasToken;
     unsentVideoCount.value = data.unsentVideoCount;
   } catch (err) {
     console.error('Failed to load engine settings:', err);
@@ -57,20 +59,25 @@ function useDefaultUrl() {
 }
 
 async function validateAndSave() {
-  if (!projectPath.value.trim()) return;
+  if (!baseUrl.value.trim()) return;
+  if (!hasStoredToken.value && !apiToken.value.trim()) {
+    validationError.value = 'API token is required';
+    return;
+  }
   validating.value = true;
   validated.value = false;
   validationError.value = '';
   try {
-    const result = await sendMessage<{ success: boolean; projectPath?: string; baseUrl?: string; error?: string }>({
+    const result = await sendMessage<{ success: boolean; baseUrl?: string; error?: string }>({
       type: 'X_SET_ENGINE_SETTINGS',
-      projectPath: projectPath.value.trim(),
       baseUrl: baseUrl.value.trim(),
+      apiToken: apiToken.value.trim(),
     });
-    if (result.projectPath) {
-      resolvedPath.value = result.projectPath;
-      projectPath.value = result.projectPath;
-      if (result.baseUrl) baseUrl.value = result.baseUrl;
+    if (result.baseUrl) {
+      validatedBaseUrl.value = result.baseUrl;
+      baseUrl.value = result.baseUrl;
+      hasStoredToken.value = true;
+      apiToken.value = '';
       validated.value = true;
     } else {
       validationError.value = result.error || 'Validation failed';
@@ -99,31 +106,9 @@ onMounted(loadSettings);
       </div>
 
       <div class="egs-body">
-        <!-- Project path -->
-        <div class="egs-field">
-          <label class="egs-label">MEDIA_ENGINE PROJECT</label>
-          <input
-            v-model="projectPath"
-            type="text"
-            class="egs-input"
-            placeholder="/path/to/media_engine"
-            @input="validated = false; validationError = ''"
-          />
-          <div v-if="validated" class="egs-validation egs-ok">
-            Validated: {{ resolvedPath }}
-          </div>
-          <div v-if="validationError" class="egs-validation egs-err">
-            {{ validationError }}
-          </div>
-          <div class="egs-hint">
-            Videos are sent via<br />
-            <code>uv run --no-sync --project &lt;path&gt; med --json acquire-url &lt;url&gt;</code>
-          </div>
-        </div>
-
         <!-- Base URL -->
         <div class="egs-field">
-          <label class="egs-label">ENGINE BASE URL</label>
+          <label class="egs-label">ENGINE SERVER URL</label>
           <div class="egs-input-row">
             <input
               v-model="baseUrl"
@@ -137,18 +122,48 @@ onMounted(loadSettings);
             </button>
           </div>
           <div class="egs-hint">
-            Catalog links open at <code>&lt;base&gt;/ui/catalog/&lt;id&gt;</code>
+            Start the server with <code>med web start</code> (or <code>med api start</code>)
           </div>
+        </div>
+
+        <!-- API token -->
+        <div class="egs-field">
+          <label class="egs-label">API TOKEN</label>
+          <div class="egs-input-row">
+            <input
+              v-model="apiToken"
+              :type="showToken ? 'text' : 'password'"
+              class="egs-input"
+              :placeholder="hasStoredToken ? 'stored — leave blank to keep' : 'paste token'"
+              autocomplete="off"
+              spellcheck="false"
+              @input="validated = false; validationError = ''"
+            />
+            <button class="egs-default-btn" @click="showToken = !showToken" title="Show/hide token">
+              {{ showToken ? 'HIDE' : 'SHOW' }}
+            </button>
+          </div>
+          <div class="egs-hint">
+            Create one with <code>med api token create --label unos-extension</code>
+          </div>
+        </div>
+
+        <!-- Validation result -->
+        <div v-if="validated" class="egs-validation egs-ok">
+          Server OK — {{ validatedBaseUrl }} · acquire.url ready
+        </div>
+        <div v-if="validationError" class="egs-validation egs-err">
+          {{ validationError }}
         </div>
 
         <!-- Validate + save button -->
         <button
           class="egs-save-btn"
-          :disabled="validating || !projectPath.trim()"
+          :disabled="validating || !baseUrl.trim()"
           @click="validateAndSave"
         >
           <span v-if="validating" class="egs-spinner"></span>
-          {{ validating ? 'Validating...' : validated ? 'Saved' : 'Validate & Save' }}
+          {{ validating ? 'Testing...' : validated ? 'Saved' : 'Test & Save' }}
         </button>
 
         <!-- Batch send -->
@@ -166,7 +181,7 @@ onMounted(loadSettings);
             </button>
           </div>
           <div v-if="!configured && unsentVideoCount > 0" class="egs-hint">
-            Set the media_engine project path to enable batch sending
+            Configure the server URL and API token to enable batch sending
           </div>
         </div>
       </div>
