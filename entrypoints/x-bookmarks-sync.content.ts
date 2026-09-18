@@ -1,10 +1,17 @@
 // Content script for X/Twitter bookmark DOM extraction
-// Only runs on x.com/i/bookmarks — responds to messages from background service worker
+// Runs on the bookmarks pages (legacy /i/bookmarks and current /i/history,
+// which hosts the Bookmarks / History / Likes tabs) — purely message-driven.
+// The background verifies the tab is actually on the Bookmarks tab before syncing.
 
 import type { RawTweetData } from '../src/db/types';
 
 export default defineContentScript({
-  matches: ['*://x.com/i/bookmarks*', '*://twitter.com/i/bookmarks*'],
+  matches: [
+    '*://x.com/i/bookmarks*',
+    '*://twitter.com/i/bookmarks*',
+    '*://x.com/i/history*',
+    '*://twitter.com/i/history*',
+  ],
   runAt: 'document_idle',
 
   main(ctx) {
@@ -105,6 +112,15 @@ export default defineContentScript({
     }
 
     /**
+     * Return the label of the selected tab in a tablist (new X /i/history UI).
+     * Used only for diagnostics — the background uses the tab URL as source of truth.
+     */
+    function getActiveTabLabel(): string | null {
+      const selected = document.querySelector('[role="tab"][aria-selected="true"]');
+      return selected?.textContent?.trim() || null;
+    }
+
+    /**
      * Message handler — responds to commands from the background service worker
      */
     const messageHandler = (
@@ -158,6 +174,8 @@ export default defineContentScript({
             scrollY: window.scrollY,
             scrollHeight: document.body.scrollHeight,
             viewportHeight: window.innerHeight,
+            url: location.href,
+            activeTabLabel: getActiveTabLabel(),
           });
           break;
         }

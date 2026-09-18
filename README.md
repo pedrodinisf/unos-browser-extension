@@ -35,7 +35,7 @@ A Chrome extension for continuous tab tracking with relationship analysis, metad
 
 ### X/Twitter Bookmarks (Default View)
 - **Default on launch** — X Marks is the first tab and opens automatically
-- **Bookmark Sync** — Syncs bookmarks from `x.com/i/bookmarks` directly inside Chrome
+- **Bookmark Sync** — Syncs bookmarks from `x.com/i/history` (the Bookmarks tab) directly inside Chrome
 - **Incremental Sync** — Stops early after finding 5 consecutive known bookmarks
 - **Full Sync** — Scrolls through entire bookmarks page to capture everything
 - **Search & Filter** — Debounced text search across tweet content and author handles
@@ -48,6 +48,7 @@ A Chrome extension for continuous tab tracking with relationship analysis, metad
 - **Export** — JSON or Markdown export (Markdown groups by month with stats)
 - **Video Download** — Download videos from bookmarked tweets via yt-dlp with separate audio extraction (requires native host setup)
 - **Quick Video Download** — Header toolbar button auto-detects bookmarked tweets with video on the active tab
+- **media_engine Integration** — Send bookmarked videos to a local media_engine content-addressed store; ENGD badge links straight to the engine catalog (requires `uv` + a media_engine checkout)
 - **Media Indicators** — Image count badges and video flags on each bookmark
 - **Analytics Dashboard** — LOG tab with acquisition timeline, top authors, content composition, and tweet age distribution
 
@@ -148,6 +149,55 @@ Popup "Download Video" → Background service worker → chrome.cookies.getAll (
 - Both files are saved to `~/Downloads/`
 - `launch.sh` adds `/opt/homebrew/bin` to PATH so ffmpeg is available for merging (Chrome launches native hosts with a minimal PATH)
 
+### media_engine Integration (Optional)
+
+Videos can also be sent to a local **media_engine** installation instead of (or in addition to)
+`~/Downloads`. The engine downloads into a content-addressed store and returns a typed Video
+artifact that is immediately available to its catalog and Studio.
+
+**Prerequisites**
+
+```bash
+# uv (Python package/project manager used by media_engine)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# media_engine project with the acquire-url extra (yt-dlp backend)
+cd /path/to/media_engine
+uv sync --extra acquire-url
+```
+
+Re-run `cd native-host && ./install.sh` — it detects `uv` and the media_engine project
+(`$MEDIA_ENGINE_PROJECT`, or common locations like `~/Documents/PROJECTS/media_engine`)
+and writes `engine-config.json` next to the host. The project path can also be set or
+overridden in the popup's **ENG** settings dialog.
+
+**How It Works**
+
+```
+Popup "Engine" → Background → chrome.cookies.getAll (X auth)
+    → sendNativeMessage(engine_download) → host writes temp Netscape cookie jar
+    → uv run --no-sync --project <engine> med --json acquire-url <tweet-url> --cookies <jar>
+    → media_engine stores the Video artifact, prints [{id, kind, path, metadata, ...}]
+    → artifactId + path saved on the XBookmark; ENGD badge opens <engine>/ui/catalog/<id>
+```
+
+- `--no-sync` is used deliberately: a bare `uv sync` would strip the installed `acquire-url` extra
+- The host venv's `bin/` is prepended to the subprocess PATH so the engine can find `yt-dlp`
+  even when its own environment is core-only
+- Cookie files are excluded from the engine's cache key, so refreshing your X session never
+  re-downloads an already-acquired URL
+- Cookie values are never logged; the temp jar is deleted in a `finally` block
+- Engine settings → **SEND ALL** queues every video bookmark not yet sent, with live progress
+
+**Troubleshooting**
+
+| Error | Fix |
+|-------|-----|
+| "uv not found" | Install uv, then re-run `./install.sh` |
+| "media_engine venv not ready" | `cd /path/to/media_engine && uv sync --extra acquire-url` |
+| "media_engine not configured" | Re-run `./install.sh` or set the project path in Engine settings |
+| Engine transfer timed out | Check `native-host.log`; large videos can take longer than 15 minutes |
+
 ### Troubleshooting
 
 | Error | Fix |
@@ -200,6 +250,7 @@ unos_browser_extension/
 │           ├── XBookmarksView.vue     # X/Twitter bookmark manager
 │           ├── XMetricsView.vue      # X bookmark analytics dashboard
 │           ├── IngestionSettingsDialog.vue # Local content ingestion config
+│           ├── EngineSettingsDialog.vue # media_engine integration config
 │           ├── DebugPanel.vue         # Debug interface
 │           ├── MetadataPanel.vue      # Tag/notes editor
 │           ├── ExportDialog.vue       # Export options
@@ -219,7 +270,7 @@ unos_browser_extension/
 │   │   ├── ExportService.test.ts
 │   │   └── utils.test.ts
 │   ├── db/
-│   │   ├── schema.ts                  # Dexie database schema (v1 → v3)
+│   │   ├── schema.ts                  # Dexie database schema (v1 → v4)
 │   │   └── types.ts                   # TypeScript interfaces
 │   ├── services/
 │   │   ├── StorageManager.ts          # Hybrid storage orchestration
@@ -231,6 +282,7 @@ unos_browser_extension/
 │   │   ├── CaptureService.ts          # Scroll screenshot orchestration
 │   │   ├── XBookmarkService.ts        # X bookmark sync & management
 │   │   ├── VideoDownloadService.ts    # Video download via native messaging
+│   │   ├── MediaEngineService.ts      # media_engine (content-addressed store) integration
 │   │   └── ContentIngestionService.ts # Local content download pipeline
 │   ├── utils/
 │   │   ├── debounce.ts                # Debounce/throttle utilities
@@ -345,6 +397,9 @@ UNOS uses a hybrid storage approach:
   archived: boolean;          // Soft delete
   ingestedAt: number | null;  // When content was downloaded locally (v3)
   ingestionPath: string | null; // Local folder path for downloaded content (v3)
+  engineArtifactId: string;   // media_engine artifact id (sha256) (v4)
+  enginePath: string;         // Path inside the engine's permanent store (v4)
+  engineIngestedAt: number | null; // When sent to media_engine (v4)
 }
 ```
 
@@ -398,9 +453,11 @@ npm run test:coverage
 
 ```
 src/__tests__/
-├── setup.ts              # Chrome API mocks
-├── ExportService.test.ts # Export functionality tests
-└── utils.test.ts         # Utility function tests (UUID, hash, debounce)
+├── setup.ts                    # Chrome API mocks
+├── ExportService.test.ts       # Export functionality tests
+├── MediaEngineService.test.ts  # media_engine native messaging + state tests
+├── migration.test.ts           # Dexie v3 → v4 backfill tests
+└── utils.test.ts               # Utility function tests (UUID, hash, debounce)
 ```
 
 ### What's Tested
@@ -408,6 +465,8 @@ src/__tests__/
 | Category | Tests | Description |
 |----------|-------|-------------|
 | ExportService | 23 | CSV generation, escaping, ZIP creation, JSON export |
+| MediaEngineService | 15 | Native message shape, cookie dedup, DB writes, batch, stale state |
+| Dexie Migration | 2 | v3 → v4 engine field backfill |
 | UUID Utils | 4 | UUID v4 format validation, uniqueness |
 | Hash Utils | 9 | URL normalization, consistent hashing |
 | Debounce/Throttle | 14 | Timing, cancellation, leading/trailing edge |

@@ -14,12 +14,15 @@ Actions:
   - download_video:    Download video via yt-dlp (existing)
   - ingest_bookmark:   Create folder, download images at max quality, write metadata+text
   - validate_folder:   Check/create a folder path, return resolved absolute path
+  - validate_engine:   Check media_engine project + uv availability
+  - engine_download:   Hand a URL to media_engine (content-addressed store) via `med acquire-url`
 """
 import json
 import logging
 import os
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -33,6 +36,15 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 VENV_BIN = SCRIPT_DIR / ".venv" / "bin"
 LOG_FILE = SCRIPT_DIR / "native-host.log"
+
+# media_engine integration (written by install.sh; overridable per message)
+ENGINE_CONFIG_FILE = SCRIPT_DIR / "engine-config.json"
+ENGINE_TIMEOUT_SECONDS = 15 * 60  # long downloads; extension times out at 16 min
+UV_CANDIDATES = [
+    Path.home() / ".local" / "bin" / "uv",
+    Path("/opt/homebrew/bin/uv"),
+    Path("/usr/local/bin/uv"),
+]
 
 # Configure file logging (stderr may be redirected by launch.sh, but this is a backup)
 logging.basicConfig(
@@ -97,6 +109,107 @@ def find_executable(name):
     if venv_path.is_file() and os.access(venv_path, os.X_OK):
         return str(venv_path)
     return shutil.which(name)
+
+
+# ── media_engine helpers ──
+
+
+def load_engine_config():
+    """Load the installer-written engine config (never contains secrets)."""
+    try:
+        with open(ENGINE_CONFIG_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log.warning("Could not read %s: %s", ENGINE_CONFIG_FILE, e)
+    return {}
+
+
+def find_uv():
+    """Locate the uv binary: known install dirs, then PATH."""
+    for candidate in UV_CANDIDATES:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return shutil.which("uv")
+
+
+def resolve_engine_project(override=None):
+    """Resolve the media_engine project path: message override > installer config."""
+    if isinstance(override, str) and override.strip():
+        return Path(override).expanduser()
+    config = load_engine_config()
+    configured = config.get("engineProject") or config.get("engine_project")
+    if isinstance(configured, str) and configured.strip():
+        return Path(configured).expanduser()
+    return None
+
+
+def build_engine_env():
+    """Build a deterministic env for `uv run` (Chrome launcher has a minimal PATH).
+
+    Prepends the host venv's bin/ so the engine's yt-dlp backend resolves
+    yt-dlp even when the media_engine venv is core-only.
+    """
+    path_dirs = [
+        str(VENV_BIN),
+        str(Path.home() / ".local" / "bin"),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ]
+    env = {
+        "PATH": ":".join(path_dirs),
+        "HOME": str(Path.home()),
+        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+    }
+    for key in ("TMPDIR", "LC_ALL", "USER", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "HF_HOME"):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    return env
+
+
+def kill_process_group(proc):
+    """Best-effort kill of a subprocess and its children (yt-dlp grandchildren)."""
+    try:
+        if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        else:
+            proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def parse_engine_artifacts(stdout):
+    """Parse the `med --json` stdout into a list of artifact dicts.
+
+    Tolerates stray non-JSON lines by extracting the outermost JSON array.
+    """
+    text = (stdout or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, list) else None
+    except Exception:
+        start = text.find("[")
+        end = text.rfind("]")
+        if start != -1 and end > start:
+            try:
+                parsed = json.loads(text[start:end + 1])
+                return parsed if isinstance(parsed, list) else None
+            except Exception:
+                return None
+        return None
 
 
 # ── Image URL helpers ──
@@ -404,6 +517,172 @@ def download_video(url, cookies, output_dir):
             Path(cookie_path).unlink(missing_ok=True)
 
 
+def action_validate_engine(msg):
+    """Validate the media_engine project path, uv, and project venv.
+
+    Returns resolved paths on success; actionable errors otherwise.
+    """
+    project = resolve_engine_project(msg.get("engineProject"))
+
+    if project is None:
+        return {
+            "success": False,
+            "error": "No media_engine project configured. Re-run native-host/install.sh or set it in Engine settings.",
+        }
+
+    try:
+        project = project.resolve()
+    except Exception as e:
+        return {"success": False, "error": f"Invalid media_engine path: {e}"}
+
+    if not project.is_dir():
+        return {"success": False, "error": f"media_engine project not found: {project}"}
+    if not (project / "pyproject.toml").is_file():
+        return {"success": False, "error": f"Not a media_engine project (no pyproject.toml): {project}"}
+
+    uv_path = find_uv()
+    if not uv_path:
+        return {
+            "success": False,
+            "error": "uv not found. Install it (https://docs.astral.sh/uv/) or re-run native-host/install.sh.",
+        }
+
+    venv_med = project / ".venv" / "bin" / "med"
+    if not venv_med.is_file():
+        return {
+            "success": False,
+            "error": f"media_engine venv not ready in {project}. Run: cd {project} && uv sync --extra acquire-url",
+        }
+
+    return {
+        "success": True,
+        "engineProject": str(project),
+        "uvPath": uv_path,
+        "venvReady": True,
+    }
+
+
+def action_engine_download(msg):
+    """Send a URL to media_engine via `uv run --no-sync ... med --json acquire-url`.
+
+    Writes cookies to a temp Netscape jar, parses the JSON artifact array
+    from stdout, and returns {success, artifactId, filePath, metadata}.
+    The temp jar is always deleted; cookie values are never logged.
+    """
+    url = (msg.get("url") or "").strip()
+    if not validate_url(url):
+        return {"success": False, "error": f"Invalid URL: {url}"}
+
+    project = resolve_engine_project(msg.get("engineProject"))
+    if project is None:
+        return {
+            "success": False,
+            "error": "media_engine project not configured. Re-run native-host/install.sh or set it in Engine settings.",
+        }
+    try:
+        project = project.resolve()
+    except Exception as e:
+        return {"success": False, "error": f"Invalid media_engine path: {e}"}
+    if not project.is_dir():
+        return {"success": False, "error": f"media_engine project not found: {project}"}
+
+    uv_path = find_uv()
+    if not uv_path:
+        return {"success": False, "error": "uv not found. Install it (https://docs.astral.sh/uv/)."}
+
+    cookies = msg.get("cookies", []) or []
+    clean_url = url.split("?")[0].strip()
+
+    cookie_path = None
+    try:
+        fd, cookie_path = tempfile.mkstemp(suffix=".txt", prefix="unos_engine_cookies_")
+        with os.fdopen(fd, "w") as f:
+            f.write(cookies_to_netscape(cookies))
+
+        cmd = [
+            uv_path,
+            "run",
+            "--no-sync",
+            "--project",
+            str(project),
+            "med",
+            "--json",
+            "acquire-url",
+            clean_url,
+            "--cookies",
+            cookie_path,
+        ]
+        log.info(
+            "engine_download: url=%s cookies=%d project=%s",
+            clean_url,
+            len(cookies),
+            project,
+        )
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(project),
+            env=build_engine_env(),
+            start_new_session=True,
+        )
+
+        try:
+            stdout, stderr = proc.communicate(timeout=ENGINE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            kill_process_group(proc)
+            try:
+                proc.communicate(timeout=10)
+            except Exception:
+                pass
+            log.error("engine_download timed out after %ds", ENGINE_TIMEOUT_SECONDS)
+            return {
+                "success": False,
+                "error": f"media_engine timed out after {ENGINE_TIMEOUT_SECONDS // 60} minutes",
+            }
+
+        if proc.returncode != 0:
+            error_msg = (stderr or stdout or "").strip() or f"med exited with code {proc.returncode}"
+            if len(error_msg) > 800:
+                error_msg = error_msg[-800:]
+            log.error("engine_download failed (exit %d): %s", proc.returncode, error_msg)
+            return {"success": False, "error": error_msg}
+
+        artifacts = parse_engine_artifacts(stdout)
+        if not artifacts:
+            log.error("engine_download: could not parse med stdout: %s", (stdout or "")[:500])
+            return {"success": False, "error": "media_engine returned no parseable artifacts"}
+
+        artifact = next(
+            (a for a in artifacts if isinstance(a, dict) and a.get("kind") == "video"),
+            artifacts[0] if isinstance(artifacts[0], dict) else None,
+        )
+        if not artifact or not artifact.get("id"):
+            return {"success": False, "error": "media_engine returned an artifact without an id"}
+
+        log.info(
+            "engine_download: artifact=%s path=%s",
+            artifact.get("id"),
+            artifact.get("path"),
+        )
+        return {
+            "success": True,
+            "artifactId": artifact.get("id"),
+            "filePath": artifact.get("path"),
+            "kind": artifact.get("kind"),
+            "metadata": artifact.get("metadata") or {},
+        }
+
+    except Exception as e:
+        log.error("engine_download error: %s", traceback.format_exc())
+        return {"success": False, "error": str(e)}
+    finally:
+        if cookie_path and Path(cookie_path).exists():
+            Path(cookie_path).unlink(missing_ok=True)
+
+
 def main():
     log.info("Native host started (pid=%d)", os.getpid())
     log.info("Python: %s", sys.executable)
@@ -440,6 +719,16 @@ def main():
 
     elif action == "ingest_bookmark":
         result = action_ingest_bookmark(msg)
+        log.info("Result: %s", result)
+        send_response(result)
+
+    elif action == "validate_engine":
+        result = action_validate_engine(msg)
+        log.info("Result: %s", result)
+        send_response(result)
+
+    elif action == "engine_download":
+        result = action_engine_download(msg)
         log.info("Result: %s", result)
         send_response(result)
 

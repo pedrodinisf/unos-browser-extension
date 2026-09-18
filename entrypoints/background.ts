@@ -11,6 +11,7 @@ import { getCaptureService } from '../src/services/CaptureService';
 import { getXBookmarkService } from '../src/services/XBookmarkService';
 import { getVideoDownloadService } from '../src/services/VideoDownloadService';
 import { getContentIngestionService } from '../src/services/ContentIngestionService';
+import { getMediaEngineService } from '../src/services/MediaEngineService';
 import { TIMING, ALARM_NAMES } from '../src/constants';
 
 export default defineBackground(() => {
@@ -584,6 +585,66 @@ export default defineBackground(() => {
             const ingestionService = getContentIngestionService();
             ingestionService.ingestBatch(message.tweetIds).catch(console.error);
             sendResponse({ success: true });
+            break;
+          }
+
+          // ============================================
+          // MEDIA_ENGINE INTEGRATION HANDLERS
+          // ============================================
+
+          case 'X_ENGINE_DOWNLOAD': {
+            // Fire-and-forget: engine transfer is long-running, progress via chrome.storage.local
+            const engineService = getMediaEngineService();
+            engineService.downloadToEngine(message.tweetUrl, message.tweetId).catch(console.error);
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'X_ENGINE_BATCH': {
+            // Fire-and-forget: batch transfer, progress via chrome.storage.local
+            const engineService = getMediaEngineService();
+            engineService.sendBatch(message.tweetIds).catch(console.error);
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'X_GET_ENGINE_SETTINGS': {
+            const engineService = getMediaEngineService();
+            const settings = await engineService.getSettings();
+            const unsentVideoCount = await engineService.getUnsentVideoCount();
+            sendResponse({ success: true, data: { ...settings, unsentVideoCount } });
+            break;
+          }
+
+          case 'X_SET_ENGINE_SETTINGS': {
+            const engineService = getMediaEngineService();
+            const result = await engineService.setSettings({
+              projectPath: message.projectPath,
+              baseUrl: message.baseUrl,
+            });
+            sendResponse({ success: result.success, data: result, error: result.error });
+            break;
+          }
+
+          case 'X_OPEN_IN_ENGINE': {
+            const engineService = getMediaEngineService();
+            const url = await engineService.getCatalogUrl(message.artifactId);
+            await chrome.tabs.create({ url, active: true });
+            sendResponse({ success: true, data: { url } });
+            break;
+          }
+
+          case 'X_CLEAR_ENGINE_STATUS': {
+            const engineService = getMediaEngineService();
+            await engineService.clearStatus();
+            sendResponse({ success: true });
+            break;
+          }
+
+          case 'X_CLEAR_STALE_ENGINE': {
+            const engineService = getMediaEngineService();
+            const cleared = await engineService.clearStaleState();
+            sendResponse({ success: true, data: { cleared } });
             break;
           }
 

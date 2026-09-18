@@ -316,7 +316,7 @@ export interface ExportData {
 // ============================================
 
 /**
- * X/Twitter bookmark entity - synced from x.com/i/bookmarks
+ * X/Twitter bookmark entity - synced from x.com/i/history (Bookmarks tab)
  */
 export interface XBookmark {
   /** Auto-increment primary key */
@@ -355,6 +355,12 @@ export interface XBookmark {
   ingestedAt: number | null;
   /** Local folder path where ingested content lives */
   ingestionPath: string;
+  /** media_engine artifact id (sha256) once sent to the engine (empty if not sent) */
+  engineArtifactId: string;
+  /** Absolute path of the artifact in the media_engine permanent store (v4) */
+  enginePath: string;
+  /** Unix timestamp (ms) when sent to media_engine (null if not sent) */
+  engineIngestedAt: number | null;
 }
 
 /**

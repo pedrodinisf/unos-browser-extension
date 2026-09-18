@@ -8,3 +8,5 @@ export type { ExportOptions } from './ExportService';
 export { CaptureService, getCaptureService } from './CaptureService';
 export { XBookmarkService, getXBookmarkService } from './XBookmarkService';
 export { VideoDownloadService, getVideoDownloadService } from './VideoDownloadService';
+export { MediaEngineService, getMediaEngineService } from './MediaEngineService';
+export type { EngineSettings } from './MediaEngineService';

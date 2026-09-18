@@ -9,8 +9,8 @@ LOG="$SCRIPT_DIR/native-host.log"
 echo "$(date '+%Y-%m-%d %H:%M:%S') [launch.sh] Started (pid=$$, args=$*)" >> "$LOG"
 echo "$(date '+%Y-%m-%d %H:%M:%S') [launch.sh] SCRIPT_DIR=$SCRIPT_DIR" >> "$LOG"
 
-# Ensure Homebrew binaries (ffmpeg, etc.) are in PATH — Chrome launches with minimal PATH
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+# Ensure Homebrew + uv binaries are in PATH — Chrome launches with minimal PATH
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 PYTHON="$SCRIPT_DIR/.venv/bin/python3"
 SCRIPT="$SCRIPT_DIR/unos_video_host.py"

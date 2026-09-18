@@ -325,7 +325,109 @@ export class TabTrackerDatabase extends Dexie {
         if (bookmark.ingestionPath === undefined) bookmark.ingestionPath = '';
       });
     });
+
+    // Schema version 4 — adds media_engine artifact tracking to xBookmarks
+    this.version(4).stores({
+      tabs: `
+        ++id,
+        &persistentId,
+        chromeTabId,
+        chromeWindowId,
+        urlHash,
+        sessionId,
+        createdAt,
+        lastActivatedAt,
+        isSaved,
+        closedAt,
+        [sessionId+chromeWindowId],
+        [urlHash+sessionId],
+        *tags
+      `.replace(/\s+/g, ''),
+
+      tabVisits: `
+        ++id,
+        tabPersistentId,
+        sessionId,
+        urlHash,
+        activatedAt,
+        [tabPersistentId+activatedAt],
+        [sessionId+activatedAt]
+      `.replace(/\s+/g, ''),
+
+      windows: `
+        ++id,
+        &persistentId,
+        chromeWindowId,
+        sessionId,
+        incognito,
+        createdAt,
+        closedAt,
+        [sessionId+incognito]
+      `.replace(/\s+/g, ''),
+
+      windowFocusEvents: `
+        ++id,
+        windowPersistentId,
+        sessionId,
+        focusedAt
+      `.replace(/\s+/g, ''),
+
+      sessions: `
+        id,
+        isActive,
+        isSaved,
+        startedAt,
+        expiresAt,
+        *tags
+      `.replace(/\s+/g, ''),
+
+      tabRelationships: `
+        ++id,
+        sourceTabPersistentId,
+        targetTabPersistentId,
+        relationshipType,
+        [sourceTabPersistentId+relationshipType],
+        [targetTabPersistentId+relationshipType]
+      `.replace(/\s+/g, ''),
+
+      tags: `
+        ++id,
+        &name,
+        usageCount
+      `.replace(/\s+/g, ''),
+
+      // xBookmarks: added engineIngestedAt index for querying un-sent bookmarks
+      xBookmarks: `
+        ++id,
+        &tweetId,
+        timestamp,
+        authorHandle,
+        *tags,
+        archived,
+        ingestedAt,
+        engineIngestedAt
+      `.replace(/\s+/g, ''),
+
+      xSyncState: `
+        ++id
+      `.replace(/\s+/g, ''),
+    }).upgrade(tx => {
+      // Backfill media_engine fields on existing bookmarks
+      return tx.table('xBookmarks').toCollection().modify(bookmark => {
+        backfillXBookmarkEngineFields(bookmark as Record<string, unknown>);
+      });
+    });
   }
+}
+
+/**
+ * Backfill Dexie v3 xBookmarks with media_engine fields for v4.
+ * Exported so the migration logic is unit-testable without IndexedDB.
+ */
+export function backfillXBookmarkEngineFields(bookmark: Record<string, unknown>): void {
+  if (bookmark.engineArtifactId === undefined) bookmark.engineArtifactId = '';
+  if (bookmark.enginePath === undefined) bookmark.enginePath = '';
+  if (bookmark.engineIngestedAt === undefined) bookmark.engineIngestedAt = null;
 }
 
 // Singleton database instance

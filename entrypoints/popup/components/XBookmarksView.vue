@@ -2,6 +2,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import type { XBookmark, XSyncState } from '../../../src/db/types';
 import IngestionSettingsDialog from './IngestionSettingsDialog.vue';
+import EngineSettingsDialog from './EngineSettingsDialog.vue';
 
 // State
 const bookmarks = ref<XBookmark[]>([]);
@@ -27,6 +28,19 @@ const ingestionStatus = ref<'idle' | 'ingesting' | 'done' | 'error'>('idle');
 const ingestionProcessed = ref(0);
 const ingestionTotal = ref(0);
 const ingestingTweetId = ref('');
+
+// media_engine state
+const showEngineSettings = ref(false);
+const engineStatus = ref<'idle' | 'sending' | 'done' | 'error'>('idle');
+const engineTweetId = ref('');
+const engineError = ref('');
+const engineArtifactId = ref('');
+const enginePath = ref('');
+const engineBatchStatus = ref<'idle' | 'sending' | 'done' | 'error'>('idle');
+const engineBatchProcessed = ref(0);
+const engineBatchTotal = ref(0);
+const engineBatchCurrentTweetId = ref('');
+const engineBatchError = ref('');
 
 // Sort & filter state
 const sortBy = ref<'firstSeenAt' | 'timestamp' | 'authorHandle'>('firstSeenAt');
@@ -184,6 +198,46 @@ function onStorageChanged(changes: Record<string, chrome.storage.StorageChange>,
   }
   if (changes.ingestion_currentTweetId) {
     ingestingTweetId.value = changes.ingestion_currentTweetId.newValue || '';
+  }
+
+  // media_engine state
+  if (changes.engine_status) {
+    engineStatus.value = changes.engine_status.newValue || 'idle';
+    // Refresh to show engine artifact badges; during a batch the batch-done
+    // handler reloads once instead of once per bookmark.
+    if (changes.engine_status.newValue === 'done' && engineBatchStatus.value !== 'sending') {
+      loadData();
+    }
+  }
+  if (changes.engine_tweetId) {
+    engineTweetId.value = changes.engine_tweetId.newValue || '';
+  }
+  if (changes.engine_error) {
+    engineError.value = changes.engine_error.newValue || '';
+  }
+  if (changes.engine_artifactId) {
+    engineArtifactId.value = changes.engine_artifactId.newValue || '';
+  }
+  if (changes.engine_path) {
+    enginePath.value = changes.engine_path.newValue || '';
+  }
+  if (changes.engine_batchStatus) {
+    engineBatchStatus.value = changes.engine_batchStatus.newValue || 'idle';
+    if (changes.engine_batchStatus.newValue === 'done') {
+      loadData();
+    }
+  }
+  if (changes.engine_batchProcessed) {
+    engineBatchProcessed.value = changes.engine_batchProcessed.newValue || 0;
+  }
+  if (changes.engine_batchTotal) {
+    engineBatchTotal.value = changes.engine_batchTotal.newValue || 0;
+  }
+  if (changes.engine_batchCurrentTweetId) {
+    engineBatchCurrentTweetId.value = changes.engine_batchCurrentTweetId.newValue || '';
+  }
+  if (changes.engine_batchError) {
+    engineBatchError.value = changes.engine_batchError.newValue || '';
   }
 }
 
@@ -369,6 +423,64 @@ async function ingestAll() {
   await sendMessage({ type: 'X_INGEST_BATCH', tweetIds });
 }
 
+// Send a single tweet video to media_engine
+async function sendToEngine(bm: XBookmark) {
+  try {
+    await sendMessage({
+      type: 'X_ENGINE_DOWNLOAD',
+      tweetUrl: bm.tweetUrl,
+      tweetId: bm.tweetId,
+    });
+  } catch (err) {
+    console.error('Failed to start engine transfer:', err);
+    statusMsg.value = 'Engine transfer failed to start';
+    setTimeout(() => (statusMsg.value = ''), 3000);
+  }
+}
+
+// Clear engine transfer status (dismiss)
+async function clearEngineStatus() {
+  try {
+    await sendMessage({ type: 'X_CLEAR_ENGINE_STATUS' });
+    engineStatus.value = 'idle';
+    engineTweetId.value = '';
+    engineError.value = '';
+    engineArtifactId.value = '';
+    enginePath.value = '';
+  } catch { /* ignore */ }
+}
+
+// Open an artifact in the media_engine catalog UI
+async function openInEngine(artifactId: string) {
+  if (!artifactId) return;
+  try {
+    await sendMessage({ type: 'X_OPEN_IN_ENGINE', artifactId });
+  } catch (err) {
+    console.error('Failed to open engine catalog:', err);
+    statusMsg.value = 'Could not open media_engine catalog';
+    setTimeout(() => (statusMsg.value = ''), 3000);
+  }
+}
+
+// Batch send all video bookmarks not yet in media_engine
+async function sendAllVideosToEngine() {
+  const allBookmarks = await sendMessage<{ bookmarks: XBookmark[]; totalCount: number }>({
+    type: 'X_GET_BOOKMARKS',
+    includeArchived: false,
+    page: 1,
+    limit: 99999,
+  });
+  const tweetIds = allBookmarks.bookmarks
+    .filter((b) => b.hasVideo && !b.engineIngestedAt)
+    .map((b) => b.tweetId);
+  if (tweetIds.length === 0) {
+    statusMsg.value = 'All video bookmarks already sent to engine';
+    setTimeout(() => (statusMsg.value = ''), 3000);
+    return;
+  }
+  await sendMessage({ type: 'X_ENGINE_BATCH', tweetIds });
+}
+
 // Helpers
 function relativeTime(ts: number): string {
   const diff = Date.now() - ts;
@@ -523,13 +635,21 @@ onMounted(async () => {
   chrome.storage.onChanged.addListener(onStorageChanged);
 
   // Check if sync or download is already in progress
-  // First, clear any stale download state (e.g. from service worker restart)
+  // First, clear any stale download/engine state (e.g. from service worker restart)
   chrome.runtime.sendMessage({ type: 'X_CLEAR_STALE_DOWNLOAD' }, () => {
+    if (chrome.runtime.lastError) { /* ignore */ }
+  });
+  chrome.runtime.sendMessage({ type: 'X_CLEAR_STALE_ENGINE' }, () => {
     if (chrome.runtime.lastError) { /* ignore */ }
   });
 
   chrome.storage.local.get(
-    ['xBookmarks_syncStatus', 'xBookmarks_downloadStatus', 'xBookmarks_downloadTweetId', 'xBookmarks_downloadError', 'xBookmarks_downloadPath'],
+    [
+      'xBookmarks_syncStatus',
+      'xBookmarks_downloadStatus', 'xBookmarks_downloadTweetId', 'xBookmarks_downloadError', 'xBookmarks_downloadPath',
+      'engine_status', 'engine_tweetId', 'engine_error', 'engine_artifactId', 'engine_path',
+      'engine_batchStatus', 'engine_batchProcessed', 'engine_batchTotal', 'engine_batchCurrentTweetId', 'engine_batchError',
+    ],
     (data) => {
       if (data.xBookmarks_syncStatus === 'syncing' || data.xBookmarks_syncStatus === 'starting') {
         syncing.value = true;
@@ -545,6 +665,36 @@ onMounted(async () => {
       }
       if (data.xBookmarks_downloadPath) {
         downloadPath.value = data.xBookmarks_downloadPath;
+      }
+      if (data.engine_status) {
+        engineStatus.value = data.engine_status;
+      }
+      if (data.engine_tweetId) {
+        engineTweetId.value = data.engine_tweetId;
+      }
+      if (data.engine_error) {
+        engineError.value = data.engine_error;
+      }
+      if (data.engine_artifactId) {
+        engineArtifactId.value = data.engine_artifactId;
+      }
+      if (data.engine_path) {
+        enginePath.value = data.engine_path;
+      }
+      if (data.engine_batchStatus) {
+        engineBatchStatus.value = data.engine_batchStatus;
+      }
+      if (data.engine_batchProcessed) {
+        engineBatchProcessed.value = data.engine_batchProcessed;
+      }
+      if (data.engine_batchTotal) {
+        engineBatchTotal.value = data.engine_batchTotal;
+      }
+      if (data.engine_batchCurrentTweetId) {
+        engineBatchCurrentTweetId.value = data.engine_batchCurrentTweetId;
+      }
+      if (data.engine_batchError) {
+        engineBatchError.value = data.engine_batchError;
       }
     },
   );
@@ -634,6 +784,10 @@ defineExpose({ reset });
         <button class="xbm-icon-btn" @click="showIngestionSettings = true" title="Ingestion settings (download all media to local folder)">
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M6.5 1.5h3L10 3.5l1.5.5 1.5-1 2 2-1 1.5.5 1.5 2 .5v3l-2 .5-.5 1.5 1 1.5-2 2-1.5-1-1.5.5-.5 2h-3l-.5-2-1.5-.5-1.5 1-2-2 1-1.5-.5-1.5-2-.5v-3l2-.5.5-1.5-1-1.5 2-2 1.5 1 1.5-.5z" stroke="currentColor" stroke-width="1.2"/><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.2"/></svg>
         </button>
+        <button class="xbm-icon-btn" @click="showEngineSettings = true" title="media_engine settings (send videos to local engine)">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="4" cy="8" r="2" stroke="currentColor" stroke-width="1.2"/><circle cx="12" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/><circle cx="12" cy="12" r="2" stroke="currentColor" stroke-width="1.2"/><path d="M6 7l4-2M6 9l4 2" stroke="currentColor" stroke-width="1.2"/></svg>
+          <span class="xbm-icon-label">ENG</span>
+        </button>
       </div>
     </div>
 
@@ -647,6 +801,18 @@ defineExpose({ reset });
     </div>
     <div v-else-if="ingestionStatus === 'done'" class="xbm-ingestion-bar xbm-ingestion-done" @click="ingestionStatus = 'idle'">
       Ingestion complete ({{ ingestionProcessed }} bookmarks)
+    </div>
+
+    <!-- Engine batch progress bar -->
+    <div v-if="engineBatchStatus === 'sending'" class="xbm-engine-bar">
+      <span class="xbm-spinner"></span>
+      <span>Sending to engine {{ engineBatchProcessed }}/{{ engineBatchTotal }}</span>
+    </div>
+    <div v-else-if="engineBatchStatus === 'done'" class="xbm-engine-bar xbm-engine-done" @click="engineBatchStatus = 'idle'">
+      Engine transfer complete ({{ engineBatchProcessed }} bookmarks)
+    </div>
+    <div v-else-if="engineBatchStatus === 'error'" class="xbm-engine-bar xbm-engine-error" @click="engineBatchStatus = 'idle'">
+      Engine batch failed: {{ engineBatchError || 'unknown error' }}
     </div>
 
     <!-- Search bar -->
@@ -748,7 +914,7 @@ defineExpose({ reset });
       <template v-else>
         <p>No bookmarks synced yet.</p>
         <p class="xbm-empty-hint">
-          Open <strong>x.com/i/bookmarks</strong> in a tab and click <strong>Sync</strong>.
+          Open <strong>x.com/i/history</strong> (Bookmarks tab) and click <strong>Sync</strong>.
         </p>
         <button class="xbm-sync-btn" @click="startSync(false)" :disabled="syncing">
           {{ syncing ? 'Syncing...' : 'Sync Now' }}
@@ -787,6 +953,12 @@ defineExpose({ reset });
             <span v-if="bm.hasVideo" class="xbm-media-badge" title="Has video">
               <svg width="10" height="10" viewBox="0 0 16 16" fill="none"><polygon points="5,3 13,8 5,13" fill="currentColor"/></svg>
             </span>
+            <span
+              v-if="bm.engineIngestedAt"
+              class="xbm-engine-pill"
+              title="Sent to media_engine — click to open catalog"
+              @click.stop="openInEngine(bm.engineArtifactId)"
+            >ENGD</span>
             <span v-for="tag in bm.tags.slice(0, 2)" :key="tag" class="xbm-tag-pill">{{ tag }}</span>
             <span v-if="bm.tags.length > 2" class="xbm-tag-overflow">+{{ bm.tags.length - 2 }}</span>
           </div>
@@ -847,6 +1019,35 @@ defineExpose({ reset });
                 Download Video
               </button>
             </template>
+
+            <!-- media_engine transfer controls -->
+            <template v-if="engineTweetId === bm.tweetId && engineStatus === 'sending'">
+              <span class="xbm-engine-status sending">
+                <span class="xbm-spinner"></span> Sending to engine...
+              </span>
+            </template>
+            <template v-else-if="engineTweetId === bm.tweetId && engineStatus === 'error'">
+              <div class="xbm-engine-error-wrap">
+                <div class="xbm-engine-error-msg">Engine: {{ engineError }}</div>
+                <button class="xbm-engine-btn" @click.stop="sendToEngine(bm)">Retry</button>
+              </div>
+            </template>
+            <template v-else-if="bm.engineIngestedAt || (engineTweetId === bm.tweetId && engineStatus === 'done')">
+              <button
+                class="xbm-engine-badge"
+                :title="'Sent to media_engine (' + (bm.engineArtifactId || engineArtifactId) + ') — click to open catalog'"
+                @click.stop="openInEngine(bm.engineArtifactId || engineArtifactId)"
+              >ENGD</button>
+            </template>
+            <template v-else>
+              <button
+                class="xbm-engine-btn"
+                :disabled="engineStatus === 'sending'"
+                title="Send video to local media_engine"
+                @click.stop="sendToEngine(bm)"
+              >Engine</button>
+            </template>
+
             <button class="xbm-copy-url-btn" @click.stop="copyTweetUrl(bm.tweetUrl)" title="Copy tweet URL">
               <svg width="10" height="10" viewBox="0 0 16 16" fill="none"><path d="M4 4H2v10h10v-2M6 2h8v8H6z" stroke="currentColor" stroke-width="1.3"/></svg>
             </button>
@@ -920,6 +1121,13 @@ defineExpose({ reset });
       v-if="showIngestionSettings"
       @close="showIngestionSettings = false"
       @ingest-all="ingestAll"
+    />
+
+    <!-- Engine settings dialog -->
+    <EngineSettingsDialog
+      v-if="showEngineSettings"
+      @close="showEngineSettings = false"
+      @send-all="sendAllVideosToEngine"
     />
   </div>
 </template>
@@ -1812,5 +2020,123 @@ defineExpose({ reset });
 .xbm-ingest-status {
   display: flex;
   align-items: center;
+}
+
+/* -- media_engine controls -- */
+.xbm-engine-btn {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent-green);
+  padding: 2px 7px;
+  border: 1px solid rgba(5, 150, 105, 0.4);
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.xbm-engine-btn:hover:not(:disabled) {
+  background: var(--accent-green);
+  color: #fff;
+}
+
+.xbm-engine-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.xbm-engine-badge {
+  font-size: 8px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--accent-green);
+  background: rgba(5, 150, 105, 0.1);
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid rgba(5, 150, 105, 0.25);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.xbm-engine-badge:hover {
+  background: rgba(5, 150, 105, 0.25);
+}
+
+.xbm-engine-pill {
+  font-size: 8px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--accent-green);
+  background: rgba(5, 150, 105, 0.1);
+  padding: 1px 4px;
+  border-radius: 3px;
+  border: 1px solid rgba(5, 150, 105, 0.25);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.xbm-engine-pill:hover {
+  background: rgba(5, 150, 105, 0.25);
+}
+
+.xbm-engine-status {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.xbm-engine-status.sending {
+  color: var(--accent-green);
+}
+
+.xbm-engine-error-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.xbm-engine-error-msg {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--accent-red);
+  word-break: break-word;
+  line-height: 1.4;
+  padding: 3px 6px;
+  background: rgba(220, 38, 38, 0.06);
+  border-radius: 3px;
+  border: 1px solid rgba(220, 38, 38, 0.15);
+  max-width: 260px;
+}
+
+/* -- Engine batch progress bar -- */
+.xbm-engine-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--accent-green);
+  background: rgba(5, 150, 105, 0.06);
+  text-align: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.xbm-engine-done {
+  cursor: pointer;
+}
+
+.xbm-engine-error {
+  color: var(--accent-red);
+  background: rgba(220, 38, 38, 0.06);
+  cursor: pointer;
 }
 </style>

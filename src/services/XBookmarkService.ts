@@ -8,6 +8,41 @@ const TAB_LOAD_TIMEOUT_MS = 30000;
 const X_JS_RENDER_DELAY_MS = 3000;
 
 /**
+ * URL patterns that may host the bookmarks timeline.
+ * - `/i/bookmarks` — legacy route
+ * - `/i/history` — current route; its sibling tabs (`/i/history/likes`,
+ *   `/i/history/history`, …) are NOT bookmarks.
+ */
+export const BOOKMARKS_MATCH_PATTERNS = [
+  '*://x.com/i/bookmarks*',
+  '*://twitter.com/i/bookmarks*',
+  '*://x.com/i/history*',
+  '*://twitter.com/i/history*',
+];
+
+/** Canonical URL to open when no bookmarks tab is already available. */
+export const BOOKMARKS_URL = 'https://x.com/i/history';
+
+/**
+ * True when a URL points at the Bookmarks timeline — exact `/i/history`
+ * (the default tab) or the legacy `/i/bookmarks` route. Sub-tabs such as
+ * `/i/history/likes` return false so the sync never extracts the wrong list.
+ * Exported for unit testing.
+ */
+export function isBookmarksUrl(url: string | undefined | null): boolean {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, '');
+    if (host !== 'x.com' && host !== 'twitter.com') return false;
+    const path = (parsed.pathname.replace(/\/+$/, '') || '/').toLowerCase();
+    return path === '/i/bookmarks' || path === '/i/history';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Send a message to the X bookmarks content script in a specific tab
  */
 function sendToContentScript(
@@ -76,7 +111,7 @@ async function ensureContentScriptInjected(tabId: number): Promise<void> {
  * XBookmarkService — orchestrates X/Twitter bookmark syncing
  *
  * Runs in the background service worker. Communicates with the content script
- * on x.com/i/bookmarks for DOM extraction and scroll commands.
+ * on x.com/i/history (Bookmarks tab) for DOM extraction and scroll commands.
  */
 export class XBookmarkService {
   private syncInProgress = false;
@@ -109,7 +144,17 @@ export class XBookmarkService {
       const tabId = await this.findOrCreateBookmarksTab();
       await this.waitForTabLoad(tabId);
       await ensureContentScriptInjected(tabId);
+      await this.ensureBookmarksPage(tabId);
       await sleep(X_JS_RENDER_DELAY_MS);
+
+      // Diagnostic breadcrumb for X UI changes (URL + selected tab label)
+      try {
+        const pageInfo = await sendToContentScript(tabId, 'GET_PAGE_INFO');
+        console.log('[UNOS] X Bookmarks: Syncing page context', {
+          url: pageInfo.url,
+          activeTab: pageInfo.activeTabLabel,
+        });
+      } catch { /* non-fatal */ }
 
       // Load known tweet IDs from Dexie
       const db = getDatabase();
@@ -231,6 +276,9 @@ export class XBookmarkService {
             archived: false,
             ingestedAt: null,
             ingestionPath: '',
+            engineArtifactId: '',
+            enginePath: '',
+            engineIngestedAt: null,
           });
           newCount++;
         }
@@ -598,23 +646,67 @@ export class XBookmarkService {
   // ── Private helpers ──
 
   private async findOrCreateBookmarksTab(): Promise<number> {
-    const tabs = await chrome.tabs.query({
-      url: ['*://x.com/i/bookmarks*', '*://twitter.com/i/bookmarks*'],
-    });
+    const tabs = await chrome.tabs.query({ url: BOOKMARKS_MATCH_PATTERNS });
 
-    const firstTab = tabs[0];
-    if (firstTab && firstTab.id) {
-      return firstTab.id;
+    // Prefer a tab that is actually on the Bookmarks timeline; a tab parked
+    // on /i/history/likes or /i/history/history must not be synced.
+    const bookmarksTab = tabs.find((tab) => tab.id && isBookmarksUrl(tab.url));
+    if (bookmarksTab?.id) {
+      return bookmarksTab.id;
     }
 
     // Create a new tab (not active so it doesn't steal focus)
     const newTab = await chrome.tabs.create({
-      url: 'https://x.com/i/bookmarks',
+      url: BOOKMARKS_URL,
       active: false,
     });
 
     if (!newTab.id) throw new Error('Failed to create bookmarks tab');
     return newTab.id;
+  }
+
+  /**
+   * Verify the tab is on the Bookmarks timeline, correcting course once if
+   * X redirected it (e.g. a legacy /i/bookmarks URL landing elsewhere).
+   */
+  private async ensureBookmarksPage(tabId: number): Promise<void> {
+    const liveUrl = await this.getLiveTabUrl(tabId);
+    if (isBookmarksUrl(liveUrl)) return;
+
+    console.log('[UNOS] X Bookmarks: Tab is not on bookmarks, navigating:', liveUrl);
+    await chrome.tabs.update(tabId, { url: BOOKMARKS_URL });
+    await this.waitForTabLoad(tabId);
+    await ensureContentScriptInjected(tabId);
+    await sleep(X_JS_RENDER_DELAY_MS);
+
+    const correctedUrl = await this.getLiveTabUrl(tabId);
+    if (!isBookmarksUrl(correctedUrl)) {
+      throw new Error(
+        `Bookmarks tab not available (landed on ${correctedUrl || 'unknown URL'}). ` +
+        'Open x.com/i/history, select the Bookmarks tab, and retry.',
+      );
+    }
+  }
+
+  /**
+   * Prefer the content script's live `location.href` (catches client-side SPA
+   * redirects that `chrome.tabs.get` may not have observed yet); fall back to
+   * the Chrome tab URL for older injected script versions.
+   */
+  private async getLiveTabUrl(tabId: number): Promise<string | undefined> {
+    try {
+      const pageInfo = await sendToContentScript(tabId, 'GET_PAGE_INFO');
+      if (typeof pageInfo.url === 'string' && pageInfo.url) {
+        return pageInfo.url;
+      }
+    } catch { /* content script unavailable — fall through */ }
+
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      return tab.url;
+    } catch {
+      return undefined;
+    }
   }
 
   private async waitForTabLoad(tabId: number): Promise<void> {

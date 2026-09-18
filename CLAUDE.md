@@ -161,7 +161,7 @@ Chrome assigns ephemeral numeric IDs (tab.id, window.id) that change on restart.
 - State persisted in `chrome.storage.local` (urlGrepper_* keys)
 
 **XBookmarkService** (`src/services/XBookmarkService.ts`)
-- Syncs X/Twitter bookmarks from `x.com/i/bookmarks` page
+- Syncs X/Twitter bookmarks from `x.com/i/history` (Bookmarks tab; legacy `x.com/i/bookmarks` also supported)
 - Orchestrates incremental sync loop: extract → check known → scroll → repeat
 - Stops after 5 consecutive known bookmarks (incremental) or 3 unchanged scroll heights (bottom)
 - **Content script injection**: Before syncing, pings the content script via `GET_PAGE_INFO`; if it's missing (tab was already open or extension reloaded), injects `content-scripts/x-bookmarks-sync.js` programmatically via `chrome.scripting.executeScript()` — this is critical because MV3 declarative content scripts only auto-inject on new navigations
@@ -172,7 +172,7 @@ Chrome assigns ephemeral numeric IDs (tab.id, window.id) that change on restart.
 - Triggered by `X_SYNC_BOOKMARKS` message from popup (fire-and-forget pattern)
 
 **X Bookmarks Content Script** (`entrypoints/x-bookmarks-sync.content.ts`)
-- Runs only on `x.com/i/bookmarks` and `twitter.com/i/bookmarks`
+- Runs on `x.com/i/history*` and legacy `x.com/i/bookmarks*` (both domains)
 - Responds to messages from background (target: `x-bookmarks-sync`):
   - `EXTRACT_TWEETS` — query all `article[data-testid="tweet"]`, parse via data-testid selectors
   - `SCROLL_DOWN` — scroll to bottom, return new page height
@@ -192,6 +192,17 @@ Chrome assigns ephemeral numeric IDs (tab.id, window.id) that change on restart.
 - **Install location**: `~/Library/Application Support/UNOS/native-host/` (outside macOS-protected `~/Documents/` so Chrome can execute it)
 - **Log file**: `~/Library/Application Support/UNOS/native-host/native-host.log`
 - **PATH**: `launch.sh` exports `/opt/homebrew/bin` so ffmpeg is available for merging (Chrome launches native hosts with minimal PATH)
+
+**MediaEngineService** (`src/services/MediaEngineService.ts`)
+- Sends bookmarked tweet videos to a local `media_engine` installation via the same native host (`engine_download` action)
+- Native host runs: `uv run --no-sync --project <engine> med --json acquire-url <url> --cookies <temp-jar>`
+- `--no-sync` is mandatory — a bare `uv sync` strips the installed `acquire-url` extra; the host venv's `bin/` is prepended to PATH so the engine finds `yt-dlp`
+- Parses the JSON artifact array from stdout and returns `{success, artifactId, filePath, metadata}`
+- DB tracking: `engineArtifactId`, `enginePath`, `engineIngestedAt` on `XBookmark` (schema v4)
+- Progress tracked via `chrome.storage.local` (engine_status, engine_batchStatus, etc.)
+- Settings: `engine_projectPath` + `engine_baseUrl` in `chrome.storage.local`; validated via the host's `validate_engine` action
+- Catalog link: `<engine_baseUrl>/ui/catalog/<artifactId>` (default `http://127.0.0.1:8000`)
+- Requires `uv` + a media_engine checkout with `uv sync --extra acquire-url`; installer writes `engine-config.json` next to the host
 
 ### 5. Database Schema (Dexie)
 
@@ -213,12 +224,14 @@ Key indexes for performance:
 - `isActive` - find current session
 - `expiresAt` - cleanup query
 
-**xBookmarks** table (schema version 2):
+**xBookmarks** table (schema version 4):
 - `&tweetId` - unique lookup for dedup
 - `timestamp` - sort by tweet date
 - `authorHandle` - filter by author
 - `*tags` - multi-entry for tag filtering
 - `archived` - filter active vs archived
+- `ingestedAt` - query un-ingested bookmarks (v3)
+- `engineIngestedAt` - query bookmarks not yet sent to media_engine (v4)
 
 **xSyncState** table (schema version 2):
 - `++id` - single-row config table (always id=1)
@@ -325,6 +338,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 - `X_INGEST_BOOKMARK` - Ingest single bookmark (fire-and-forget; params: `tweetId`)
 - `X_INGEST_BATCH` - Ingest multiple bookmarks (fire-and-forget; params: `tweetIds: string[]`)
 
+*media_engine:*
+- `X_ENGINE_DOWNLOAD` - Send a tweet video to media_engine (fire-and-forget; params: `tweetUrl, tweetId?`)
+- `X_ENGINE_BATCH` - Send multiple bookmarks (fire-and-forget; params: `tweetIds: string[]`)
+- `X_GET_ENGINE_SETTINGS` - Get project path, base URL, unsent video count
+- `X_SET_ENGINE_SETTINGS` - Validate via native host and save (params: `projectPath?, baseUrl?`)
+- `X_OPEN_IN_ENGINE` - Open `<baseUrl>/ui/catalog/<artifactId>` in a new tab (params: `artifactId`)
+- `X_CLEAR_ENGINE_STATUS` - Reset single-transfer state to idle
+- `X_CLEAR_STALE_ENGINE` - Clear stale sending state after a service worker restart
+
 *Analytics:*
 - `X_GET_BOOKMARK_METRICS` - Get aggregated bookmark metrics (returns `XBookmarkMetrics`)
 
@@ -414,9 +436,9 @@ await sendToContentScript(tabId, 'EXTRACT_TWEETS');
 - `entrypoints/x-bookmarks-sync.content.ts` - Content script for X bookmark DOM extraction
 
 **Native host** (`native-host/` source, installed to `~/Library/Application Support/UNOS/native-host/`):
-- `unos_video_host.py` - Python native messaging host (actions: `download_video`, `ingest_bookmark`, `validate_folder`)
-- `launch.sh` - Bash launcher that adds Homebrew to PATH (for ffmpeg), sets up venv Python and stderr logging
-- `install.sh` - macOS installer: copies files to `~/Library/Application Support/UNOS/native-host/`, creates .venv with yt-dlp, auto-detects extension ID(s) from Chrome profiles, registers native messaging manifest
+- `unos_video_host.py` - Python native messaging host (actions: `download_video`, `ingest_bookmark`, `validate_folder`, `validate_engine`, `engine_download`)
+- `launch.sh` - Bash launcher that adds `~/.local/bin` + Homebrew to PATH (for uv/ffmpeg), sets up venv Python and stderr logging
+- `install.sh` - macOS installer: copies files to `~/Library/Application Support/UNOS/native-host/`, creates .venv with yt-dlp, auto-detects extension ID(s) from Chrome profiles, detects `uv` + the media_engine project and writes `engine-config.json`, registers native messaging manifest
 - `requirements.txt` - Python dependencies (yt-dlp)
 - **Why installed outside project dir**: macOS Sequoia TCC restrictions prevent Chrome from executing scripts in `~/Documents/`. The install script copies files to `~/Library/Application Support/UNOS/` which is not subject to these restrictions.
 
@@ -516,9 +538,16 @@ await sendToContentScript(tabId, 'EXTRACT_TWEETS');
 - Tweet text formatting: @mentions highlighted green, URLs in amber, #hashtags in green; emojis preserved natively
 - Click to expand: full text in compact blockquote panel (green left border, beige background, 11.5px/1.3 line-height), timestamps, media thumbnails, tags+actions row (inline), notes textarea, video download — optimized for information density within Chrome popup height constraints
 - Video bookmarks: "Download Video" button (uses native messaging host), "Copy URL" fallback
+- Video bookmarks: "Engine" button sends to media_engine; ENGD badge opens the engine catalog; per-tweet sending/error/retry states
 - Download states: downloading spinner, "Downloaded ✓", error with retry
+- Engine batch bar (`Sending to engine N/M`) driven by `engine_batch*` storage keys
 - Empty state with sync instructions
-- Monitors `chrome.storage.onChanged` for live sync/download progress
+- Monitors `chrome.storage.onChanged` for live sync/download/engine progress
+
+**EngineSettingsDialog.vue** - media_engine integration configuration:
+- media_engine project path + engine base URL fields, validated via the native host (`validate_engine`)
+- Shows unsent-video count with "SEND ALL" batch action
+- NASA instrument panel styling (monospace labels, green/amber accents)
 
 ## Data Retention & Cleanup
 
@@ -591,9 +620,11 @@ npm run test:coverage
 
 ```
 src/__tests__/
-├── setup.ts              # Global mocks (Chrome APIs)
-├── ExportService.test.ts # Service tests
-└── utils.test.ts         # Utility function tests
+├── setup.ts                    # Global mocks (Chrome APIs)
+├── ExportService.test.ts       # Service tests
+├── MediaEngineService.test.ts  # media_engine integration tests
+├── migration.test.ts           # Dexie v3 → v4 backfill tests
+└── utils.test.ts               # Utility function tests
 ```
 
 ### Chrome API Mocking
@@ -602,7 +633,7 @@ Tests run outside the browser, so Chrome APIs must be mocked. The setup file (`s
 
 ```typescript
 // Available mocks (imported from setup.ts)
-import { mockSendMessage, mockTabs, mockWindows } from './setup';
+import { mockSendMessage, mockSendNativeMessage, mockCookies, mockStorageLocal, mockTabs, mockWindows } from './setup';
 
 // Example: Mock a message response
 mockSendMessage.mockImplementation((message, callback) => {
@@ -744,7 +775,7 @@ XBookmark → Triager Agent → EnrichedBookmark {
 
 ### Schema Changes Needed
 
-- Add new fields to `XBookmark` interface and Dexie schema (version 3)
+- Add new fields to `XBookmark` interface and Dexie schema (next free version)
 - New `xBookmarkAnalysis` table for triager outputs (keeps raw bookmark clean)
 - Index on `topics` (multi-entry) and `triageScore` for filtered views
 
